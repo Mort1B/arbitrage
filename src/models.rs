@@ -116,6 +116,8 @@ pub struct TriangleOpportunitySignal {
     #[serde(default)]
     pub pair_resync_attempt_count_by_leg: [u64; 3],
     #[serde(default)]
+    pub pair_resync_deferred_count_by_leg: [u64; 3],
+    #[serde(default)]
     pub pair_resync_count_by_leg: [u64; 3],
     #[serde(default)]
     pub pair_resync_failure_count_by_leg: [u64; 3],
@@ -168,6 +170,7 @@ mod tests {
             book_freshness_passed: true,
             pair_synced_by_leg: [true, true, true],
             pair_resync_attempt_count_by_leg: [1, 2, 3],
+            pair_resync_deferred_count_by_leg: [0, 1, 2],
             pair_resync_count_by_leg: [1, 2, 3],
             pair_resync_failure_count_by_leg: [0, 1, 0],
             pair_gap_count_by_leg: [0, 4, 1],

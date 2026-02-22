@@ -47,10 +47,13 @@ struct TriangleOutputs {
 struct PairSyncStats {
     gap_count: u64,
     resync_attempt_count: u64,
+    resync_deferred_count: u64,
     resync_success_count: u64,
     resync_failure_count: u64,
     last_resync_timestamp_ms: u64,
     last_resync_failure_timestamp_ms: u64,
+    next_resync_allowed_timestamp_ms: u64,
+    resync_backoff_ms: u64,
 }
 
 #[derive(Clone)]
@@ -74,11 +77,26 @@ struct TriangleBookTiming {
 struct TriangleSyncHealth {
     pair_synced_by_leg: [bool; 3],
     pair_resync_attempt_count_by_leg: [u64; 3],
+    pair_resync_deferred_count_by_leg: [u64; 3],
     pair_resync_count_by_leg: [u64; 3],
     pair_resync_failure_count_by_leg: [u64; 3],
     pair_gap_count_by_leg: [u64; 3],
     pair_last_resync_timestamp_ms_by_leg: [u64; 3],
     pair_last_resync_failure_timestamp_ms_by_leg: [u64; 3],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotSyncAttemptOutcome {
+    Synced,
+    Deferred { wait_ms: u64 },
+    Noop,
+}
+
+#[derive(Clone, Copy)]
+struct SnapshotResyncPolicy {
+    min_interval_ms: u64,
+    backoff_initial_ms: u64,
+    backoff_max_ms: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +128,11 @@ pub async fn main_worker(
     let mut pair_sync_stats: HashMap<String, PairSyncStats> =
         HashMap::with_capacity(config.depth_streams.len());
     let snapshot_limit = config.results_limit.clamp(1, 5_000) as u16;
+    let snapshot_resync_policy = SnapshotResyncPolicy {
+        min_interval_ms: config.snapshot_resync_min_interval_ms,
+        backoff_initial_ms: config.snapshot_resync_backoff_initial_ms,
+        backoff_max_ms: config.snapshot_resync_backoff_max_ms,
+    };
     let publish_every = Duration::from_millis(u64::from(config.update_interval.max(1)));
     let mut last_publish = Instant::now();
 
@@ -170,17 +193,30 @@ pub async fn main_worker(
                                 stream_name: parsed.stream.clone(),
                                 diff,
                             });
-                            if let Err(e) = sync_pair_from_snapshot(
+                            match sync_pair_from_snapshot(
                                 &rest_client,
                                 &mut market_state,
                                 &mut pending_diffs,
                                 &mut pair_sync_stats,
                                 &pair_key,
                                 snapshot_limit,
+                                snapshot_resync_policy,
                             )
                             .await
                             {
-                                warn!("failed to resync {} from snapshot: {}", pair_key, e);
+                                Ok(
+                                    SnapshotSyncAttemptOutcome::Synced
+                                    | SnapshotSyncAttemptOutcome::Noop,
+                                ) => {}
+                                Ok(SnapshotSyncAttemptOutcome::Deferred { wait_ms }) => {
+                                    debug!(
+                                        "resync for {} deferred due to cooldown/backoff (wait {} ms)",
+                                        pair_key, wait_ms
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("failed to resync {} from snapshot: {}", pair_key, e);
+                                }
                             }
                         }
                     }
@@ -191,17 +227,29 @@ pub async fn main_worker(
                         diff,
                     });
                     trim_pending_buffer(buf, 2_048);
-                    if let Err(e) = sync_pair_from_snapshot(
+                    match sync_pair_from_snapshot(
                         &rest_client,
                         &mut market_state,
                         &mut pending_diffs,
                         &mut pair_sync_stats,
                         &pair_key,
                         snapshot_limit,
+                        snapshot_resync_policy,
                     )
                     .await
                     {
-                        warn!("failed to sync {} from snapshot: {}", pair_key, e);
+                        Ok(
+                            SnapshotSyncAttemptOutcome::Synced | SnapshotSyncAttemptOutcome::Noop,
+                        ) => {}
+                        Ok(SnapshotSyncAttemptOutcome::Deferred { wait_ms }) => {
+                            debug!(
+                                "sync for {} deferred due to cooldown/backoff (wait {} ms)",
+                                pair_key, wait_ms
+                            );
+                        }
+                        Err(e) => {
+                            warn!("failed to sync {} from snapshot: {}", pair_key, e);
+                        }
                     }
                 }
             }
@@ -493,6 +541,7 @@ fn build_opportunity_signal(
         book_freshness_passed: book_timing.book_freshness_passed,
         pair_synced_by_leg: sync_health.pair_synced_by_leg,
         pair_resync_attempt_count_by_leg: sync_health.pair_resync_attempt_count_by_leg,
+        pair_resync_deferred_count_by_leg: sync_health.pair_resync_deferred_count_by_leg,
         pair_resync_count_by_leg: sync_health.pair_resync_count_by_leg,
         pair_resync_failure_count_by_leg: sync_health.pair_resync_failure_count_by_leg,
         pair_gap_count_by_leg: sync_health.pair_gap_count_by_leg,
@@ -581,22 +630,29 @@ async fn sync_pair_from_snapshot(
     pair_sync_stats: &mut HashMap<String, PairSyncStats>,
     pair_key: &str,
     snapshot_limit: u16,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    resync_policy: SnapshotResyncPolicy,
+) -> Result<SnapshotSyncAttemptOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let Some(buffer) = pending_diffs.get_mut(pair_key) else {
-        return Ok(());
+        return Ok(SnapshotSyncAttemptOutcome::Noop);
     };
     if buffer.is_empty() {
-        return Ok(());
+        return Ok(SnapshotSyncAttemptOutcome::Noop);
     }
 
     let latest_stream_name = buffer
         .last()
         .map(|u| u.stream_name.clone())
         .unwrap_or_else(|| format!("{pair_key}@depth@100ms"));
-    pair_sync_stats
-        .entry(pair_key.to_string())
-        .or_default()
-        .resync_attempt_count += 1;
+    let now_ms = now_unix_ms();
+    {
+        let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
+        if let Some(wait_ms) = resync_wait_remaining_ms(stats, now_ms) {
+            stats.resync_deferred_count += 1;
+            return Ok(SnapshotSyncAttemptOutcome::Deferred { wait_ms });
+        }
+        stats.resync_attempt_count += 1;
+        schedule_min_resync_interval(stats, now_ms, resync_policy.min_interval_ms);
+    }
 
     // Retry a few times because the REST snapshot can lag behind the already-buffered diff stream.
     for _ in 0..3 {
@@ -631,7 +687,8 @@ async fn sync_pair_from_snapshot(
                 let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
                 stats.resync_success_count += 1;
                 stats.last_resync_timestamp_ms = now_unix_ms();
-                return Ok(());
+                stats.resync_backoff_ms = 0;
+                return Ok(SnapshotSyncAttemptOutcome::Synced);
             }
             Ok(false) => {
                 // snapshot is older than buffered stream start; fetch a newer one
@@ -642,6 +699,11 @@ async fn sync_pair_from_snapshot(
                 let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
                 stats.resync_failure_count += 1;
                 stats.last_resync_failure_timestamp_ms = now_unix_ms();
+                schedule_failure_backoff(
+                    stats,
+                    resync_policy.backoff_initial_ms,
+                    resync_policy.backoff_max_ms,
+                );
                 return Err(format!("buffered diff replay failed for {pair_key}: {err:?}").into());
             }
         }
@@ -651,7 +713,54 @@ async fn sync_pair_from_snapshot(
     let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
     stats.resync_failure_count += 1;
     stats.last_resync_failure_timestamp_ms = now_unix_ms();
+    schedule_failure_backoff(
+        stats,
+        resync_policy.backoff_initial_ms,
+        resync_policy.backoff_max_ms,
+    );
     Err(format!("unable to obtain fresh enough snapshot for {pair_key} after retries").into())
+}
+
+fn resync_wait_remaining_ms(stats: &PairSyncStats, now_ms: u64) -> Option<u64> {
+    let next_allowed = stats.next_resync_allowed_timestamp_ms;
+    if next_allowed > now_ms {
+        Some(next_allowed.saturating_sub(now_ms))
+    } else {
+        None
+    }
+}
+
+fn schedule_min_resync_interval(
+    stats: &mut PairSyncStats,
+    now_ms: u64,
+    min_resync_interval_ms: u64,
+) {
+    let next = now_ms.saturating_add(min_resync_interval_ms);
+    if next > stats.next_resync_allowed_timestamp_ms {
+        stats.next_resync_allowed_timestamp_ms = next;
+    }
+}
+
+fn schedule_failure_backoff(
+    stats: &mut PairSyncStats,
+    backoff_initial_ms: u64,
+    backoff_max_ms: u64,
+) {
+    let max_backoff = backoff_max_ms.max(backoff_initial_ms);
+    if max_backoff == 0 {
+        return;
+    }
+    let current = if stats.resync_backoff_ms == 0 {
+        backoff_initial_ms.min(max_backoff)
+    } else {
+        stats.resync_backoff_ms.min(max_backoff)
+    };
+    let now_ms = now_unix_ms();
+    let next = now_ms.saturating_add(current);
+    if next > stats.next_resync_allowed_timestamp_ms {
+        stats.next_resync_allowed_timestamp_ms = next;
+    }
+    stats.resync_backoff_ms = current.saturating_mul(2).min(max_backoff);
 }
 
 fn apply_buffered_diffs_after_snapshot(
@@ -763,6 +872,11 @@ fn build_triangle_sync_health(
             stats0.resync_attempt_count,
             stats1.resync_attempt_count,
             stats2.resync_attempt_count,
+        ],
+        pair_resync_deferred_count_by_leg: [
+            stats0.resync_deferred_count,
+            stats1.resync_deferred_count,
+            stats2.resync_deferred_count,
         ],
         pair_resync_count_by_leg: [
             stats0.resync_success_count,

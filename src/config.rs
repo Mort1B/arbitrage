@@ -38,6 +38,18 @@ const fn default_max_book_age_ms() -> u64 {
     1_500
 }
 
+const fn default_snapshot_resync_min_interval_ms() -> u64 {
+    250
+}
+
+const fn default_snapshot_resync_backoff_initial_ms() -> u64 {
+    500
+}
+
+const fn default_snapshot_resync_backoff_max_ms() -> u64 {
+    5_000
+}
+
 const fn default_exchange_rules_enabled() -> bool {
     true
 }
@@ -171,6 +183,9 @@ exchange_rules:
         assert_eq!(rule.qty_step, Some(Decimal::new(1, 3)));
         assert_eq!(rule.fee_bps, Some(Decimal::new(75, 1)));
         assert_eq!(cfg.max_book_age_ms, 1_500);
+        assert_eq!(cfg.snapshot_resync_min_interval_ms, 250);
+        assert_eq!(cfg.snapshot_resync_backoff_initial_ms, 500);
+        assert_eq!(cfg.snapshot_resync_backoff_max_ms, 5_000);
     }
 }
 
@@ -239,6 +254,12 @@ pub struct AppConfig {
     pub signal_min_hit_rate: f64,
     #[serde(default = "default_max_book_age_ms")]
     pub max_book_age_ms: u64,
+    #[serde(default = "default_snapshot_resync_min_interval_ms")]
+    pub snapshot_resync_min_interval_ms: u64,
+    #[serde(default = "default_snapshot_resync_backoff_initial_ms")]
+    pub snapshot_resync_backoff_initial_ms: u64,
+    #[serde(default = "default_snapshot_resync_backoff_max_ms")]
+    pub snapshot_resync_backoff_max_ms: u64,
     #[serde(default)]
     pub exchange_rules: ExchangeRulesConfig,
     #[serde(default)]
