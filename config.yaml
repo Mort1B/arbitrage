@@ -1,6 +1,11 @@
 bind_addr: 127.0.0.1
 bind_port: 8000
 reconnect_delay_ms: 1500
+signal_log_enabled: true
+signal_log_path: data/triangle_signals.jsonl
+signal_log_channel_capacity: 2048
+signal_min_profit_bps: 8.0
+signal_min_hit_rate: 0.20
 update_interval: 100
 results_limit: 5
 depth_streams:

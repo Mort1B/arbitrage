@@ -4,9 +4,11 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::Duration;
 use warp::{ws::Message, Filter, Rejection};
 
+mod analyzer;
 mod config;
 mod handlers;
 mod models;
+mod signal_log;
 mod workers;
 mod ws;
 
@@ -19,6 +21,7 @@ pub struct Client {
 
 type OutboundMessage = std::result::Result<Message, warp::Error>;
 type ClientSender = mpsc::Sender<OutboundMessage>;
+type SignalLogSender = mpsc::Sender<String>;
 type Clients = Arc<RwLock<HashMap<String, Client>>>;
 type Result<T> = std::result::Result<T, Rejection>;
 
@@ -38,6 +41,10 @@ fn get_binance_streams_url(
 
 #[tokio::main]
 async fn main() {
+    if analyzer::run_from_cli_args(std::env::args().skip(1)) {
+        return;
+    }
+
     log4rs::init_file("log_config.yaml", Default::default()).expect("failed to initialize logging");
     let config_file = std::fs::File::open("config.yaml").expect("Could not open config.yaml");
     let app_config: config::AppConfig =
@@ -64,6 +71,14 @@ async fn main() {
     let worker_clients = clients.clone();
     let worker_binance_url = binance_url.clone();
     let worker_config = app_config.clone();
+    let signal_log_sender = if app_config.signal_log_enabled {
+        Some(signal_log::spawn_jsonl_writer(
+            app_config.signal_log_path.clone(),
+            app_config.signal_log_channel_capacity.max(64),
+        ))
+    } else {
+        None
+    };
     tokio::spawn(async move {
         let reconnect_delay = Duration::from_millis(worker_config.reconnect_delay_ms.max(250));
 
@@ -78,8 +93,13 @@ async fn main() {
                         debug!("header {}: {:?}", header, header_value);
                     }
 
-                    workers::main_worker(worker_clients.clone(), worker_config.clone(), socket)
-                        .await;
+                    workers::main_worker(
+                        worker_clients.clone(),
+                        worker_config.clone(),
+                        socket,
+                        signal_log_sender.clone(),
+                    )
+                    .await;
                     warn!(
                         "Binance worker exited; reconnecting after {:?}",
                         reconnect_delay
