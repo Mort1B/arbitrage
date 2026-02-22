@@ -1426,8 +1426,32 @@ fn calc_triangle_step(
 
 #[cfg(test)]
 mod tests {
-    use super::{calc_triangle_step, dec_from_f64, dec_from_i64};
+    use super::{
+        age_since_timestamp_ms, build_triangle_sync_health, calc_triangle_step,
+        count_recent_timestamps, dec_from_f64, dec_from_i64, record_gap_event,
+        resync_wait_remaining_ms, schedule_failure_backoff, schedule_min_resync_interval,
+        PairSyncStats,
+    };
+    use crate::{config::TriangleConfig, market_state::MarketState, orderbook::PriceLevel};
     use rust_decimal::Decimal;
+    use std::collections::{HashMap, VecDeque};
+
+    fn seed_synced_book(state: &mut MarketState, pair: &str) {
+        state.apply_orderbook_snapshot(
+            pair,
+            format!("{pair}@depth@100ms"),
+            1,
+            vec![PriceLevel {
+                price: Decimal::ONE,
+                qty: Decimal::ONE,
+            }],
+            vec![PriceLevel {
+                price: Decimal::ONE,
+                qty: Decimal::ONE,
+            }],
+            1_000,
+        );
+    }
 
     #[test]
     fn sell_side_uses_bid() {
@@ -1453,5 +1477,107 @@ mod tests {
             Decimal::ZERO,
         );
         assert_eq!(amount, dec_from_f64(0.5));
+    }
+
+    #[test]
+    fn gap_window_tracking_prunes_old_events() {
+        let mut stats = PairSyncStats::default();
+        record_gap_event(&mut stats, 1_000, 1_000);
+        record_gap_event(&mut stats, 1_500, 1_000);
+        record_gap_event(&mut stats, 2_100, 1_000);
+
+        assert_eq!(stats.gap_count, 3);
+        assert_eq!(stats.recent_gap_timestamps_ms.len(), 2);
+        assert_eq!(
+            count_recent_timestamps(&stats.recent_gap_timestamps_ms, 2_100, 1_000),
+            2
+        );
+    }
+
+    #[test]
+    fn sync_health_fails_on_recent_gap_burst_and_recent_resync_failure() {
+        let triangle = TriangleConfig {
+            parts: ["btc".to_string(), "eth".to_string(), "usdt".to_string()],
+            pairs: [
+                "ethbtc".to_string(),
+                "ethusdt".to_string(),
+                "btcusdt".to_string(),
+            ],
+        };
+
+        let mut market_state = MarketState::with_capacity(3);
+        seed_synced_book(&mut market_state, "ethbtc");
+        seed_synced_book(&mut market_state, "ethusdt");
+        seed_synced_book(&mut market_state, "btcusdt");
+
+        let mut pair_sync_stats = HashMap::new();
+        pair_sync_stats.insert(
+            "ethbtc".to_string(),
+            PairSyncStats {
+                gap_count: 5,
+                recent_gap_timestamps_ms: VecDeque::from(vec![95_500, 98_500, 99_900]),
+                ..PairSyncStats::default()
+            },
+        );
+        pair_sync_stats.insert(
+            "ethusdt".to_string(),
+            PairSyncStats {
+                last_resync_failure_timestamp_ms: 99_000,
+                ..PairSyncStats::default()
+            },
+        );
+
+        let health = build_triangle_sync_health(
+            &triangle,
+            &market_state,
+            &pair_sync_stats,
+            100_000,
+            10_000,
+            2,
+            2_000,
+        );
+
+        assert!(!health.sync_health_passed);
+        assert_eq!(health.pair_recent_gap_count_by_leg, [3, 0, 0]);
+        assert_eq!(
+            health.pair_recent_resync_failure_age_ms_by_leg,
+            [0, 1_000, 0]
+        );
+
+        let recovered = build_triangle_sync_health(
+            &triangle,
+            &market_state,
+            &pair_sync_stats,
+            100_000,
+            10_000,
+            5,
+            500,
+        );
+        assert!(recovered.sync_health_passed);
+    }
+
+    #[test]
+    fn resync_cooldown_and_backoff_helpers_schedule_waits() {
+        let mut stats = PairSyncStats::default();
+        schedule_min_resync_interval(&mut stats, 1_000, 250);
+        assert_eq!(resync_wait_remaining_ms(&stats, 1_100), Some(150));
+        assert_eq!(resync_wait_remaining_ms(&stats, 1_300), None);
+
+        schedule_failure_backoff(&mut stats, 500, 2_000);
+        assert_eq!(stats.resync_backoff_ms, 1_000);
+        let wait_after_first_failure =
+            resync_wait_remaining_ms(&stats, super::now_unix_ms()).unwrap_or(0);
+        assert!(wait_after_first_failure <= 500);
+
+        let prev_next = stats.next_resync_allowed_timestamp_ms;
+        schedule_failure_backoff(&mut stats, 500, 2_000);
+        assert_eq!(stats.resync_backoff_ms, 2_000);
+        assert!(stats.next_resync_allowed_timestamp_ms >= prev_next);
+    }
+
+    #[test]
+    fn age_since_zero_timestamp_is_zero() {
+        assert_eq!(age_since_timestamp_ms(1_000, 0), 0);
+        assert_eq!(age_since_timestamp_ms(1_000, 900), 100);
     }
 }

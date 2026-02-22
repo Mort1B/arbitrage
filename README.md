@@ -215,6 +215,12 @@ Important keys:
 - `signal_min_profit_bps`: threshold for marking a signal as `worthy`
 - `signal_min_hit_rate`: threshold for marking a signal as `worthy`
 - `max_book_age_ms`: freshness gate for triangle legs (0 disables age gating)
+- `snapshot_resync_min_interval_ms`: minimum delay between snapshot resync attempts per pair
+- `snapshot_resync_backoff_initial_ms`: initial retry backoff after snapshot resync failure
+- `snapshot_resync_backoff_max_ms`: maximum retry backoff after repeated snapshot resync failures
+- `sync_health_gap_window_ms`: rolling window for counting recent sequence-gap events
+- `sync_health_max_gaps_in_window_per_leg`: reject `worthy` if a leg exceeds this recent gap count (0 disables)
+- `sync_health_max_recent_resync_failure_age_ms`: reject `worthy` if a leg had a recent resync failure within this age (0 disables)
 - `exchange_rules`: execution filters and assumptions (min notional, lot size, fees, assumed start amount)
 
 Precision note:
@@ -243,6 +249,16 @@ Each line in `signal_log_path` is a JSON object (`TriangleOpportunitySignal`) wi
 - `min_book_age_ms`
 - `max_book_age_ms`
 - `book_freshness_passed`
+- `pair_synced_by_leg`
+- `pair_resync_attempt_count_by_leg`
+- `pair_resync_deferred_count_by_leg`
+- `pair_resync_count_by_leg`
+- `pair_resync_failure_count_by_leg`
+- `pair_gap_count_by_leg`
+- `pair_recent_gap_count_by_leg`
+- `pair_recent_gap_window_ms`
+- `pair_recent_resync_failure_age_ms_by_leg`
+- `sync_health_passed`
 - `worthy`
 - `best_level_quotes` (ask/bid + size for each leg)
 
@@ -287,6 +303,8 @@ Clients can also send `ping` and receive `pong`.
 - Signal log numeric fields are emitted as decimal strings for precision-preserving storage
 - Offline tools (`analyze`, `pnl-report`, `simulate`) use `Decimal` internally for signal-derived calculations/aggregates
 - `worthy` now also depends on market-data freshness (`max_book_age_ms`) in addition to profit/hit-rate/execution filters
+- `worthy` can also be gated by sync-health thresholds (recent gap bursts / recent resync failures) when enabled
+- Snapshot resync attempts are throttled per pair (cooldown + exponential backoff) to reduce REST pressure during gap storms
 - Console reports still format values for readability (some values are displayed as rounded decimals)
 - Does not place orders
 - Does not model slippage, fees per symbol/tier, min notional, balances, or risk limits
@@ -306,6 +324,16 @@ This plan is focused on turning the current signal scanner into an execution-rea
 ### Phase 1: Execution-Ready Research (Priority)
 
 Goal: make opportunity detection market-data-correct and latency-aware before any live execution work.
+
+Current progress (implemented):
+
+1. Local order book module with sequence-aware diff application.
+2. `MarketState` registry backed by local books.
+3. Freshness timing fields and `max_book_age_ms` gating.
+4. Diff-depth ingestion + REST snapshot sync/resync.
+5. Per-pair sync health metrics (gaps/resync attempts/success/failure/deferred).
+6. Per-pair snapshot resync cooldown/backoff.
+7. Sync-health gating (`sync_health_passed`) for `worthy`.
 
 Scope:
 
