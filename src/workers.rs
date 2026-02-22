@@ -1,7 +1,9 @@
 use crate::{
+    binance_rest,
     config::{AppConfig, ExchangeRulesConfig, PairRuleConfig, TriangleConfig},
     market_state::{MarketDepthView, MarketState},
     models::{self, DepthStreamWrapper},
+    orderbook::{ApplyOutcome, OrderBookDiff, PriceLevel},
     Clients, SignalLogSender,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -9,7 +11,7 @@ use log::{debug, error, info, warn};
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     net::TcpStream,
@@ -39,6 +41,12 @@ struct ProfitPoint {
 struct TriangleOutputs {
     ws_payload: String,
     signal_line: String,
+}
+
+#[derive(Clone)]
+struct BufferedDiffUpdate {
+    stream_name: String,
+    diff: OrderBookDiff,
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +83,10 @@ pub async fn main_worker(
     signal_log_sender: Option<SignalLogSender>,
 ) {
     let mut market_state = MarketState::with_capacity(config.depth_streams.len());
+    let rest_client = reqwest::Client::new();
+    let mut pending_diffs: HashMap<String, Vec<BufferedDiffUpdate>> =
+        HashMap::with_capacity(config.depth_streams.len());
+    let snapshot_limit = config.results_limit.clamp(1, 5_000) as u16;
     let publish_every = Duration::from_millis(u64::from(config.update_interval.max(1)));
     let mut last_publish = Instant::now();
 
@@ -94,21 +106,75 @@ pub async fn main_worker(
 
         match msg {
             BinanceMessage::Text(text) => {
-                let parsed: models::DepthStreamWrapper = match serde_json::from_str(text.as_ref()) {
-                    Ok(parsed) => parsed,
-                    Err(e) => {
-                        warn!("failed to parse Binance depth payload: {}", e);
-                        continue;
-                    }
-                };
+                let parsed: models::DiffDepthStreamWrapper =
+                    match serde_json::from_str(text.as_ref()) {
+                        Ok(parsed) => parsed,
+                        Err(e) => {
+                            warn!("failed to parse Binance diff depth payload: {}", e);
+                            continue;
+                        }
+                    };
+                let receive_time_ms = now_unix_ms();
+                let pair_key = pair_key_from_stream(&parsed.stream).to_string();
+                let diff = diff_from_stream_event(&parsed, receive_time_ms);
 
                 debug!(
-                    "received {} ({} bids / {} asks)",
+                    "received {} diff ({} bids / {} asks, {}-{})",
                     parsed.stream,
                     parsed.data.bids.len(),
-                    parsed.data.asks.len()
+                    parsed.data.asks.len(),
+                    parsed.data.first_update_id,
+                    parsed.data.final_update_id
                 );
-                market_state.apply_depth_snapshot(parsed, now_unix_ms());
+
+                if market_state.is_pair_synced(&pair_key) {
+                    match market_state.apply_orderbook_diff(&pair_key, &parsed.stream, diff.clone())
+                    {
+                        Ok(ApplyOutcome::Applied | ApplyOutcome::IgnoredStale) => {}
+                        Err(err) => {
+                            warn!(
+                                "order book diff apply failed for {}: {:?}; resyncing",
+                                pair_key, err
+                            );
+                            market_state.mark_pair_unsynced(&pair_key);
+                            let buf = pending_diffs.entry(pair_key.clone()).or_default();
+                            buf.clear();
+                            buf.push(BufferedDiffUpdate {
+                                stream_name: parsed.stream.clone(),
+                                diff,
+                            });
+                            if let Err(e) = sync_pair_from_snapshot(
+                                &rest_client,
+                                &mut market_state,
+                                &mut pending_diffs,
+                                &pair_key,
+                                snapshot_limit,
+                            )
+                            .await
+                            {
+                                warn!("failed to resync {} from snapshot: {}", pair_key, e);
+                            }
+                        }
+                    }
+                } else {
+                    let buf = pending_diffs.entry(pair_key.clone()).or_default();
+                    buf.push(BufferedDiffUpdate {
+                        stream_name: parsed.stream.clone(),
+                        diff,
+                    });
+                    trim_pending_buffer(buf, 2_048);
+                    if let Err(e) = sync_pair_from_snapshot(
+                        &rest_client,
+                        &mut market_state,
+                        &mut pending_diffs,
+                        &pair_key,
+                        snapshot_limit,
+                    )
+                    .await
+                    {
+                        warn!("failed to sync {} from snapshot: {}", pair_key, e);
+                    }
+                }
             }
             BinanceMessage::Ping(payload) => {
                 if let Err(e) = socket.send(BinanceMessage::Pong(payload)).await {
@@ -415,6 +481,157 @@ fn build_opportunity_signal(
             },
         ],
     }
+}
+
+fn pair_key_from_stream(stream: &str) -> &str {
+    stream.split_once('@').map_or(stream, |(pair, _)| pair)
+}
+
+fn diff_from_stream_event(
+    event: &models::DiffDepthStreamWrapper,
+    receive_time_ms: u64,
+) -> OrderBookDiff {
+    OrderBookDiff {
+        first_update_id: event.data.first_update_id,
+        final_update_id: event.data.final_update_id,
+        prev_final_update_id: event.data.prev_final_update_id,
+        bids: event
+            .data
+            .bids
+            .iter()
+            .map(|offer| PriceLevel {
+                price: offer.price,
+                qty: offer.size,
+            })
+            .collect(),
+        asks: event
+            .data
+            .asks
+            .iter()
+            .map(|offer| PriceLevel {
+                price: offer.price,
+                qty: offer.size,
+            })
+            .collect(),
+        event_time_ms: Some(event.data.event_time_ms),
+        receive_time_ms: Some(receive_time_ms),
+    }
+}
+
+fn trim_pending_buffer(buffer: &mut Vec<BufferedDiffUpdate>, max_len: usize) {
+    if buffer.len() <= max_len {
+        return;
+    }
+    let drop_count = buffer.len() - max_len;
+    buffer.drain(0..drop_count);
+}
+
+async fn sync_pair_from_snapshot(
+    rest_client: &reqwest::Client,
+    market_state: &mut MarketState,
+    pending_diffs: &mut HashMap<String, Vec<BufferedDiffUpdate>>,
+    pair_key: &str,
+    snapshot_limit: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(buffer) = pending_diffs.get_mut(pair_key) else {
+        return Ok(());
+    };
+    if buffer.is_empty() {
+        return Ok(());
+    }
+
+    let latest_stream_name = buffer
+        .last()
+        .map(|u| u.stream_name.clone())
+        .unwrap_or_else(|| format!("{pair_key}@depth@100ms"));
+
+    // Retry a few times because the REST snapshot can lag behind the already-buffered diff stream.
+    for _ in 0..3 {
+        let snapshot =
+            binance_rest::fetch_depth_snapshot(rest_client, pair_key, snapshot_limit).await?;
+
+        market_state.apply_orderbook_snapshot(
+            pair_key,
+            latest_stream_name.clone(),
+            snapshot.last_update_id,
+            snapshot
+                .bids
+                .into_iter()
+                .map(|level| PriceLevel {
+                    price: level.price,
+                    qty: level.qty,
+                })
+                .collect(),
+            snapshot
+                .asks
+                .into_iter()
+                .map(|level| PriceLevel {
+                    price: level.price,
+                    qty: level.qty,
+                })
+                .collect(),
+            snapshot.fetched_at_ms,
+        );
+
+        match apply_buffered_diffs_after_snapshot(market_state, pair_key, buffer) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                // snapshot is older than buffered stream start; fetch a newer one
+                continue;
+            }
+            Err(err) => {
+                market_state.mark_pair_unsynced(pair_key);
+                return Err(format!("buffered diff replay failed for {pair_key}: {err:?}").into());
+            }
+        }
+    }
+
+    market_state.mark_pair_unsynced(pair_key);
+    Err(format!("unable to obtain fresh enough snapshot for {pair_key} after retries").into())
+}
+
+fn apply_buffered_diffs_after_snapshot(
+    market_state: &mut MarketState,
+    pair_key: &str,
+    buffer: &mut Vec<BufferedDiffUpdate>,
+) -> Result<bool, crate::orderbook::OrderBookError> {
+    let Some(last_update_id) = market_state
+        .export_depth_view(pair_key, 1)
+        .map(|view| view.depth.data.last_update_id)
+    else {
+        return Ok(false);
+    };
+
+    if let Some(first) = buffer.first() {
+        if first.diff.first_update_id > last_update_id.saturating_add(1) {
+            return Ok(false);
+        }
+    }
+
+    // Discard stale events and locate the first event that bridges the snapshot.
+    buffer.retain(|u| u.diff.final_update_id > last_update_id);
+    let bridge_idx = buffer.iter().position(|u| {
+        if let Some(prev_final) = u.diff.prev_final_update_id {
+            prev_final == last_update_id
+        } else {
+            u.diff.first_update_id <= last_update_id.saturating_add(1)
+                && u.diff.final_update_id >= last_update_id.saturating_add(1)
+        }
+    });
+
+    let Some(bridge_idx) = bridge_idx else {
+        return Ok(false);
+    };
+
+    if bridge_idx > 0 {
+        buffer.drain(0..bridge_idx);
+    }
+
+    let replay = std::mem::take(buffer);
+    for update in replay {
+        market_state.apply_orderbook_diff(pair_key, &update.stream_name, update.diff)?;
+    }
+    Ok(true)
 }
 
 fn now_unix_ms() -> u64 {

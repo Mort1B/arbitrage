@@ -31,10 +31,48 @@ where
     str_val.parse::<Decimal>().map_err(de::Error::custom)
 }
 
+fn de_offer_levels_from_pairs<'de, D>(deserializer: D) -> Result<Vec<OfferData>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw_levels = Vec::<[Cow<'de, str>; 2]>::deserialize(deserializer)?;
+    raw_levels
+        .into_iter()
+        .map(|[price, size]| {
+            Ok(OfferData {
+                price: price.parse::<Decimal>().map_err(de::Error::custom)?,
+                size: size.parse::<Decimal>().map_err(de::Error::custom)?,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DepthStreamWrapper {
     pub stream: String,
     pub data: DepthStreamData,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DiffDepthStreamWrapper {
+    pub stream: String,
+    pub data: DiffDepthEventData,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DiffDepthEventData {
+    #[serde(rename = "E")]
+    pub event_time_ms: u64,
+    #[serde(rename = "U")]
+    pub first_update_id: u64,
+    #[serde(rename = "u")]
+    pub final_update_id: u64,
+    #[serde(default, rename = "pu")]
+    pub prev_final_update_id: Option<u64>,
+    #[serde(rename = "b", deserialize_with = "de_offer_levels_from_pairs")]
+    pub bids: Vec<OfferData>,
+    #[serde(rename = "a", deserialize_with = "de_offer_levels_from_pairs")]
+    pub asks: Vec<OfferData>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -153,5 +191,31 @@ mod tests {
         assert!(json.contains("\"best_profit_bps\":\"1.23\""));
         assert!(json.contains("\"adjusted_profit_bps\":\"3.0\""));
         assert!(json.contains("\"ask_price\":\"0.0010\""));
+    }
+
+    #[test]
+    fn parses_diff_depth_stream_wrapper() {
+        let raw = r#"{
+          "stream":"btcusdt@depth@100ms",
+          "data":{
+            "e":"depthUpdate",
+            "E":123456789,
+            "s":"BTCUSDT",
+            "U":100,
+            "u":101,
+            "b":[["100.1","2.5"]],
+            "a":[["100.2","1.0"]]
+          }
+        }"#;
+
+        let parsed: super::DiffDepthStreamWrapper = serde_json::from_str(raw).expect("parse");
+        assert_eq!(parsed.stream, "btcusdt@depth@100ms");
+        assert_eq!(parsed.data.first_update_id, 100);
+        assert_eq!(parsed.data.final_update_id, 101);
+        assert_eq!(
+            parsed.data.bids[0].price,
+            "100.1".parse::<Decimal>().unwrap()
+        );
+        assert_eq!(parsed.data.asks[0].size, Decimal::ONE);
     }
 }

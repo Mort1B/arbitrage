@@ -35,11 +35,11 @@ type Result<T> = std::result::Result<T, Rejection>;
 fn get_binance_streams_url(
     depth_streams: &[String],
     update_interval: u32,
-    results_limit: u32,
+    _results_limit: u32,
 ) -> String {
     let depth_streams_joined = depth_streams
         .iter()
-        .map(|stream| format!("{stream}@depth{results_limit}@{update_interval}ms"))
+        .map(|stream| format!("{stream}@depth@{update_interval}ms"))
         .collect::<Vec<_>>()
         .join("/");
 

@@ -1,6 +1,8 @@
 use crate::{
     models::{DepthStreamData, DepthStreamWrapper, OfferData},
-    orderbook::{OrderBook, OrderBookSnapshot, PriceLevel},
+    orderbook::{
+        ApplyOutcome, OrderBook, OrderBookDiff, OrderBookError, OrderBookSnapshot, PriceLevel,
+    },
 };
 use std::collections::HashMap;
 
@@ -28,6 +30,7 @@ impl MarketState {
         }
     }
 
+    #[cfg(test)]
     pub fn apply_depth_snapshot(&mut self, payload: DepthStreamWrapper, receive_time_ms: u64) {
         let pair = pair_key_from_stream(&payload.stream).to_string();
         let last_stream = payload.stream.clone();
@@ -54,6 +57,60 @@ impl MarketState {
         });
         entry.last_stream = last_stream;
         entry.book.apply_snapshot(snapshot);
+    }
+
+    pub fn is_pair_synced(&self, pair: &str) -> bool {
+        self.books
+            .get(pair)
+            .is_some_and(|entry| entry.book.is_synced())
+    }
+
+    pub fn mark_pair_unsynced(&mut self, pair: &str) {
+        if let Some(entry) = self.books.get_mut(pair) {
+            entry.book.clear_and_mark_unsynced();
+        }
+    }
+
+    pub fn apply_orderbook_snapshot(
+        &mut self,
+        pair: &str,
+        stream_name: String,
+        last_update_id: u64,
+        bids: Vec<PriceLevel>,
+        asks: Vec<PriceLevel>,
+        snapshot_time_ms: u64,
+    ) {
+        let entry = self
+            .books
+            .entry(pair.to_string())
+            .or_insert_with(|| BookEntry {
+                book: OrderBook::new(pair.to_string()),
+                last_stream: stream_name.clone(),
+            });
+        entry.last_stream = stream_name;
+        entry.book.apply_snapshot(OrderBookSnapshot {
+            last_update_id,
+            bids,
+            asks,
+            snapshot_time_ms: Some(snapshot_time_ms),
+        });
+    }
+
+    pub fn apply_orderbook_diff(
+        &mut self,
+        pair: &str,
+        stream_name: &str,
+        diff: OrderBookDiff,
+    ) -> Result<ApplyOutcome, OrderBookError> {
+        let entry = self
+            .books
+            .entry(pair.to_string())
+            .or_insert_with(|| BookEntry {
+                book: OrderBook::new(pair.to_string()),
+                last_stream: stream_name.to_string(),
+            });
+        entry.last_stream = stream_name.to_string();
+        entry.book.apply_diff(diff)
     }
 
     #[cfg(test)]
@@ -103,10 +160,12 @@ impl MarketState {
     }
 }
 
+#[cfg(test)]
 fn pair_key_from_stream(stream: &str) -> &str {
     stream.split_once('@').map_or(stream, |(pair, _)| pair)
 }
 
+#[cfg(test)]
 fn offer_to_price_level(offer: OfferData) -> PriceLevel {
     PriceLevel {
         price: offer.price,
