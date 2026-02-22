@@ -99,6 +99,21 @@ The generated file contains:
 - optional `pair_rules`
 - summary metadata (counts, timestamp)
 
+## Replay Local-Book Sync (Offline)
+
+Replay a captured JSONL stream of `snapshot` + `diff` records through the local-book sync path (no Binance network required):
+
+```bash
+cargo run -- replay-check
+cargo run -- replay-check data/replay_market.jsonl
+cargo run -- replay-check data/replay_market.jsonl --strict
+```
+
+Notes:
+
+- `--strict` fails if replay leaves pending buffered diffs or hits apply/replay errors.
+- This is intended for regression-testing captured Binance sequences offline.
+
 ## Analyze Recorded Signals
 
 Analyze the default signal file:
@@ -273,6 +288,28 @@ This format is intended to be consumed later by:
 - paper-trading simulators
 - candidate bot execution logic
 
+## Replay Input Format (JSONL)
+
+`replay-check` accepts one JSON object per line with `kind: "snapshot"` or `kind: "diff"`.
+
+Snapshot example:
+
+```json
+{"kind":"snapshot","pair":"btcusdt","stream":"btcusdt@depth@100ms","last_update_id":100,"timestamp_ms":1710000000000,"bids":[["100.0","1.0"]],"asks":[["101.0","1.0"]]}
+```
+
+Diff example:
+
+```json
+{"kind":"diff","stream":"btcusdt@depth@100ms","first_update_id":101,"final_update_id":102,"prev_final_update_id":100,"event_time_ms":1710000000100,"receive_time_ms":1710000000101,"bids":[["100.0","2.0"]],"asks":[["101.0","0"]]}
+```
+
+Notes:
+
+- Price/qty levels use Binance-style string pairs.
+- `stream` is optional for snapshots (defaults to `<pair>@depth@100ms`).
+- Invalid/unknown lines are skipped and reported as `ignored`.
+
 ## WebSocket Output
 
 The websocket endpoint (`/ws`) broadcasts triangle payloads containing:
@@ -295,6 +332,7 @@ Clients can also send `ping` and receive `pong`.
 - `src/binance_rest.rs` - REST helpers (exchangeInfo cache, depth snapshot fetch for upcoming local-book sync)
 - `src/generate_config.rs` - writes auto-generated triangles/depth streams to YAML
 - `src/pnl_report.rs` - positive-PnL opportunity report from signal logs
+- `src/replay_check.rs` - offline local-book sync replay/regression checker for snapshot+diff JSONL
 - `src/config.rs` - config structs + defaults
 
 ## Notes / Limitations

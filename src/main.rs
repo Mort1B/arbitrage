@@ -14,6 +14,7 @@ mod market_state;
 mod models;
 mod orderbook;
 mod pnl_report;
+mod replay_check;
 mod signal_log;
 mod simulator;
 mod workers;
@@ -55,6 +56,9 @@ async fn main() {
         return;
     }
     if pnl_report::run_from_cli_args(std::env::args().skip(1)) {
+        return;
+    }
+    if replay_check::run_from_cli_args(std::env::args().skip(1)) {
         return;
     }
     if generate_config::run_from_cli_args(std::env::args().skip(1)).await {
