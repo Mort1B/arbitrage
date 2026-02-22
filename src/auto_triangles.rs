@@ -1,4 +1,5 @@
 use crate::config::{AutoTriangleGenerationConfig, PairRuleConfig, TriangleConfig};
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -277,11 +278,11 @@ fn pair_rule_from_filters(filters: &[Value]) -> PairRuleConfig {
     pair_rule
 }
 
-fn parse_filter_num(filter: &Value, key: &str) -> Option<f64> {
+fn parse_filter_num(filter: &Value, key: &str) -> Option<Decimal> {
     filter
         .get(key)
         .and_then(Value::as_str)
-        .and_then(|s| s.parse::<f64>().ok())
+        .and_then(|s| s.parse::<Decimal>().ok())
 }
 
 fn find_edge_by_symbol<'a>(
@@ -294,6 +295,7 @@ fn find_edge_by_symbol<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::Decimal;
 
     fn sym(symbol: &str, base: &str, quote: &str) -> BinanceSymbol {
         BinanceSymbol {
@@ -340,8 +342,8 @@ mod tests {
             serde_json::json!({"filterType":"MIN_NOTIONAL","minNotional":"10.0"}),
         ];
         let rule = pair_rule_from_filters(&filters);
-        assert_eq!(rule.min_qty, Some(0.001));
-        assert_eq!(rule.qty_step, Some(0.001));
-        assert_eq!(rule.min_notional, Some(10.0));
+        assert_eq!(rule.min_qty, Some(Decimal::new(1, 3)));
+        assert_eq!(rule.qty_step, Some(Decimal::new(1, 3)));
+        assert_eq!(rule.min_notional, Some(Decimal::new(100, 1)));
     }
 }

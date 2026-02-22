@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -37,16 +38,16 @@ const fn default_exchange_rules_enabled() -> bool {
     true
 }
 
-const fn default_latency_penalty_bps() -> f64 {
-    2.0
+fn default_latency_penalty_bps() -> Decimal {
+    Decimal::new(20, 1)
 }
 
-const fn default_default_fee_bps() -> f64 {
-    7.5
+fn default_default_fee_bps() -> Decimal {
+    Decimal::new(75, 1)
 }
 
-const fn default_default_assumed_start_amount() -> f64 {
-    1.0
+fn default_default_assumed_start_amount() -> Decimal {
+    Decimal::ONE
 }
 
 const fn default_auto_triangle_generation_enabled() -> bool {
@@ -75,20 +76,20 @@ const fn default_auto_triangle_generation_merge_pair_rules() -> bool {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct PairRuleConfig {
-    pub min_notional: Option<f64>,
-    pub min_qty: Option<f64>,
-    pub qty_step: Option<f64>,
-    pub fee_bps: Option<f64>,
+    pub min_notional: Option<Decimal>,
+    pub min_qty: Option<Decimal>,
+    pub qty_step: Option<Decimal>,
+    pub fee_bps: Option<Decimal>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct ExchangeRulesConfig {
     pub enabled: bool,
-    pub latency_penalty_bps: f64,
-    pub default_fee_bps: f64,
-    pub default_assumed_start_amount: f64,
-    pub assumed_start_amounts: HashMap<String, f64>,
+    pub latency_penalty_bps: Decimal,
+    pub default_fee_bps: Decimal,
+    pub default_assumed_start_amount: Decimal,
+    pub assumed_start_amounts: HashMap<String, Decimal>,
     pub pair_rules: HashMap<String, PairRuleConfig>,
 }
 
@@ -102,6 +103,57 @@ impl Default for ExchangeRulesConfig {
             assumed_start_amounts: HashMap::new(),
             pair_rules: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppConfig, Decimal};
+
+    #[test]
+    fn parses_decimal_exchange_rules_from_yaml_numbers() {
+        let yaml = r#"
+update_interval: 100
+results_limit: 10
+depth_streams: [ethbtc]
+triangles:
+  - parts: [btc, eth, usdt]
+    pairs: [ethbtc, ethusdt, btcusdt]
+exchange_rules:
+  enabled: true
+  latency_penalty_bps: 2.0
+  default_fee_bps: 7.5
+  default_assumed_start_amount: 1.0
+  assumed_start_amounts:
+    usdt: 100.0
+  pair_rules:
+    ethbtc:
+      min_notional: 0.0001
+      min_qty: 0.001
+      qty_step: 0.001
+      fee_bps: 7.5
+"#;
+
+        let cfg: AppConfig = serde_yaml::from_str(yaml).expect("config should parse");
+        assert_eq!(cfg.exchange_rules.latency_penalty_bps, Decimal::new(20, 1));
+        assert_eq!(cfg.exchange_rules.default_fee_bps, Decimal::new(75, 1));
+        assert_eq!(
+            cfg.exchange_rules.default_assumed_start_amount,
+            Decimal::ONE
+        );
+        assert_eq!(
+            cfg.exchange_rules.assumed_start_amounts.get("usdt"),
+            Some(&Decimal::new(1000, 1))
+        );
+        let rule = cfg
+            .exchange_rules
+            .pair_rules
+            .get("ethbtc")
+            .expect("pair rule exists");
+        assert_eq!(rule.min_notional, Some(Decimal::new(1, 4)));
+        assert_eq!(rule.min_qty, Some(Decimal::new(1, 3)));
+        assert_eq!(rule.qty_step, Some(Decimal::new(1, 3)));
+        assert_eq!(rule.fee_bps, Some(Decimal::new(75, 1)));
     }
 }
 

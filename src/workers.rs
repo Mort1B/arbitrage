@@ -378,6 +378,7 @@ fn now_unix_ms() -> u64 {
     }
 }
 
+#[cfg(test)]
 fn dec_from_f64(value: f64) -> Decimal {
     Decimal::from_f64(value).unwrap_or(Decimal::ZERO)
 }
@@ -410,25 +411,18 @@ fn evaluate_execution_filters(
     level_index: usize,
     rules: &ExchangeRulesConfig,
 ) -> ExecutionFilterOutcome {
-    let fee_bps_by_leg = [
+    let fee_bps_by_leg_dec = [
         fee_bps_for_pair(rules, &triangle_config.pairs[0]),
         fee_bps_for_pair(rules, &triangle_config.pairs[1]),
         fee_bps_for_pair(rules, &triangle_config.pairs[2]),
     ];
-    let assumed_start_amount = assumed_start_amount_for_asset(rules, &triangle_config.parts[0]);
-    let assumed_start_amount_dec = {
-        let value = dec_from_f64(assumed_start_amount);
-        if value > Decimal::ZERO {
-            value
-        } else {
-            dec_epsilon()
-        }
-    };
-    let fee_bps_by_leg_dec = [
-        dec_from_f64(fee_bps_by_leg[0]),
-        dec_from_f64(fee_bps_by_leg[1]),
-        dec_from_f64(fee_bps_by_leg[2]),
+    let fee_bps_by_leg = [
+        dec_to_f64(fee_bps_by_leg_dec[0]),
+        dec_to_f64(fee_bps_by_leg_dec[1]),
+        dec_to_f64(fee_bps_by_leg_dec[2]),
     ];
+    let assumed_start_amount_dec = assumed_start_amount_for_asset(rules, &triangle_config.parts[0]);
+    let assumed_start_amount = dec_to_f64(assumed_start_amount_dec);
 
     if !rules.enabled {
         let raw_profit = simulate_triangle_path_amount(
@@ -482,7 +476,7 @@ fn evaluate_execution_filters(
         }
     };
 
-    let latency_penalty_bps = rules.latency_penalty_bps.max(0.0);
+    let latency_penalty_bps = dec_to_f64(rules.latency_penalty_bps.max(Decimal::ZERO));
     let adjusted_profit_bps = executable_profit_bps - latency_penalty_bps;
 
     ExecutionFilterOutcome {
@@ -615,14 +609,14 @@ fn pair_rule_for_pair<'a>(
         .or_else(|| rules.pair_rules.get(&pair_name.to_ascii_lowercase()))
 }
 
-fn fee_bps_for_pair(rules: &ExchangeRulesConfig, pair_name: &str) -> f64 {
+fn fee_bps_for_pair(rules: &ExchangeRulesConfig, pair_name: &str) -> Decimal {
     pair_rule_for_pair(rules, pair_name)
         .and_then(|rule| rule.fee_bps)
         .unwrap_or(rules.default_fee_bps)
-        .max(0.0)
+        .max(Decimal::ZERO)
 }
 
-fn assumed_start_amount_for_asset(rules: &ExchangeRulesConfig, asset: &str) -> f64 {
+fn assumed_start_amount_for_asset(rules: &ExchangeRulesConfig, asset: &str) -> Decimal {
     rules
         .assumed_start_amounts
         .get(asset)
@@ -634,17 +628,17 @@ fn assumed_start_amount_for_asset(rules: &ExchangeRulesConfig, asset: &str) -> f
                 .copied()
         })
         .unwrap_or(rules.default_assumed_start_amount)
-        .max(f64::MIN_POSITIVE)
+        .max(dec_epsilon())
 }
 
 fn apply_qty_rounding(quantity: Decimal, pair_rule: Option<&PairRuleConfig>) -> Decimal {
     let Some(step) = pair_rule.and_then(|rule| rule.qty_step) else {
         return quantity;
     };
-    if step <= 0.0 {
+    if step <= Decimal::ZERO {
         return quantity;
     }
-    floor_to_step(quantity, dec_from_f64(step))
+    floor_to_step(quantity, step)
 }
 
 fn floor_to_step(value: Decimal, step: Decimal) -> Decimal {
@@ -663,8 +657,7 @@ fn validate_base_qty_rules(
         return Err(format!("non-positive rounded quantity on {pair_name}"));
     }
     if let Some(min_qty) = pair_rule.and_then(|rule| rule.min_qty) {
-        let min_qty_dec = dec_from_f64(min_qty);
-        if base_qty < min_qty_dec {
+        if base_qty < min_qty {
             return Err(format!(
                 "quantity below min_qty on {pair_name} ({base_qty} < {min_qty})"
             ));
@@ -679,8 +672,7 @@ fn validate_min_notional(
     pair_rule: Option<&PairRuleConfig>,
 ) -> Result<(), String> {
     if let Some(min_notional) = pair_rule.and_then(|rule| rule.min_notional) {
-        let min_notional_dec = dec_from_f64(min_notional);
-        if notional < min_notional_dec {
+        if notional < min_notional {
             return Err(format!(
                 "notional below min_notional on {pair_name} ({notional} < {min_notional})"
             ));
@@ -717,9 +709,9 @@ fn calculate_triangle_profits(
     }
 
     let mut profits = Vec::with_capacity(depth);
-    let fee1 = dec_from_f64(fee_bps_for_pair(exchange_rules, start_pair));
-    let fee2 = dec_from_f64(fee_bps_for_pair(exchange_rules, mid_pair));
-    let fee3 = dec_from_f64(fee_bps_for_pair(exchange_rules, end_pair));
+    let fee1 = fee_bps_for_pair(exchange_rules, start_pair);
+    let fee2 = fee_bps_for_pair(exchange_rules, mid_pair);
+    let fee3 = fee_bps_for_pair(exchange_rules, end_pair);
 
     for i in 0..depth {
         let ask1 = start_pair_data.data.asks[i].price;

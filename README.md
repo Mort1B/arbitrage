@@ -17,6 +17,10 @@ This is currently a signal/research tool, not an order-executing bot.
 - WebSocket server for live consumers (`/ws`)
 - JSONL signal logging for offline analysis / downstream tools
 - Built-in `analyze` command for quick summaries
+- Built-in `pnl-report` command for positive-PnL aggregation (with CSV export)
+- Built-in `simulate` paper-trading command with virtual balances
+- Auto triangle generation from an asset list (`exchangeInfo` graph + 3-cycle enumeration)
+- `rust_decimal`-based execution/profit math in the triangle engine
 - Auto-reconnect to Binance with configurable backoff
 - Backpressure-aware client broadcasting
 
@@ -82,6 +86,7 @@ cargo run -- generate-config generated_triangles.yaml
 Options:
 
 - `--no-pair-rules` to omit extracted Binance filter rules from the output file
+- `--stdout` / `--print-only` to write the generated YAML to stdout instead of a file
 
 The generated file contains:
 
@@ -124,6 +129,7 @@ Examples:
 ```bash
 cargo run -- pnl-report data/triangle_signals.jsonl --top 25 --min-adjusted-bps 3.0
 cargo run -- pnl-report --include-unworthy --include-nonexecutable
+cargo run -- pnl-report --top 50 --csv pnl_top50.csv
 ```
 
 This report aggregates by triangle and shows:
@@ -132,6 +138,10 @@ This report aggregates by triangle and shows:
 - positive adjusted-PnL sample count
 - summed estimated raw/adjusted PnL (in the triangle start asset)
 - average and max adjusted bps
+
+Optional export:
+
+- `--csv <path>` writes the displayed top rows to a CSV file
 
 ## Paper Trade Simulation
 
@@ -199,6 +209,12 @@ Important keys:
 - `signal_log_channel_capacity`: buffered log queue size
 - `signal_min_profit_bps`: threshold for marking a signal as `worthy`
 - `signal_min_hit_rate`: threshold for marking a signal as `worthy`
+- `exchange_rules`: execution filters and assumptions (min notional, lot size, fees, assumed start amount)
+
+Precision note:
+
+- `exchange_rules` numeric values are parsed into `Decimal` for execution-grade calculations
+- YAML values can be written as normal numbers (for example `7.5`) and are parsed precisely into decimal values
 
 ## Signal Output Format (JSONL)
 
@@ -249,14 +265,14 @@ Clients can also send `ping` and receive `pong`.
 
 ## Notes / Limitations
 
-- Uses `f64` math today (good for research, not ideal for execution precision)
+- Core triangle/execution math uses `rust_decimal`, but signal/report output fields are still serialized as `f64` for compatibility
 - Does not place orders
 - Does not model slippage, fees per symbol/tier, min notional, balances, or risk limits
 - `worthy` is a heuristic threshold, not a trading decision
 
 ## Next Steps (Recommended)
 
-1. Add paper-trading simulation using the JSONL signal stream.
-2. Switch profit math to `rust_decimal` (or fixed-point).
-3. Add exchange rule filters (min notional, lot size, fees, latency assumptions).
+1. Add Binance `exchangeInfo` cache/persistence to avoid fetching on every startup in auto-generation mode.
+2. Add a live paper-trading runtime that consumes signals directly (not only offline replay).
+3. If execution precision is required end-to-end, move signal/report numeric fields from `f64` to decimal-string/`Decimal` representations.
 4. Add execution adapter interfaces before implementing a real bot.
