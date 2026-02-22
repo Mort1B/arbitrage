@@ -195,9 +195,11 @@ impl Default for AutoTriangleGenerationConfig {
             enabled: default_auto_triangle_generation_enabled(),
             assets: Vec::new(),
             exchange_info_url: default_auto_triangle_generation_exchange_info_url(),
-            exchange_info_cache_enabled: default_auto_triangle_generation_exchange_info_cache_enabled(),
+            exchange_info_cache_enabled:
+                default_auto_triangle_generation_exchange_info_cache_enabled(),
             exchange_info_cache_path: default_auto_triangle_generation_exchange_info_cache_path(),
-            exchange_info_cache_ttl_secs: default_auto_triangle_generation_exchange_info_cache_ttl_secs(),
+            exchange_info_cache_ttl_secs:
+                default_auto_triangle_generation_exchange_info_cache_ttl_secs(),
             include_reverse_cycles: default_auto_triangle_generation_include_reverse_cycles(),
             include_all_starts: default_auto_triangle_generation_include_all_starts(),
             max_triangles: default_auto_triangle_generation_max_triangles(),

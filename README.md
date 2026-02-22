@@ -62,6 +62,9 @@ Config example (`config.yaml`):
 auto_triangle_generation:
   enabled: true
   exchange_info_url: https://api.binance.com/api/v3/exchangeInfo
+  exchange_info_cache_enabled: true
+  exchange_info_cache_path: data/cache/binance_exchange_info.json
+  exchange_info_cache_ttl_secs: 300
   include_reverse_cycles: true
   include_all_starts: false
   max_triangles: 0
@@ -72,6 +75,7 @@ auto_triangle_generation:
 Notes:
 
 - `max_triangles: 0` means no limit
+- `exchange_info_cache_*` reduces repeated startup fetches during auto-generation
 - `include_reverse_cycles` evaluates both directions of a cycle
 - `include_all_starts` expands each cycle into all 3 starting assets (higher CPU load)
 
@@ -204,6 +208,7 @@ Important keys:
 - `depth_streams`: subscribed Binance depth streams
 - `triangles`: triangle definitions (`parts` + `pairs`)
 - `auto_triangle_generation`: build triangles/depth streams automatically from an asset list
+  - includes `exchange_info_cache_enabled`, `exchange_info_cache_path`, `exchange_info_cache_ttl_secs`
 - `signal_log_enabled`: enable JSONL logging
 - `signal_log_path`: output JSONL path
 - `signal_log_channel_capacity`: buffered log queue size
@@ -271,6 +276,7 @@ Clients can also send `ping` and receive `pong`.
 - `src/signal_log.rs` - async JSONL writer task
 - `src/analyzer.rs` - offline analyzer CLI
 - `src/auto_triangles.rs` - asset-universe graph builder + triangle enumeration
+- `src/binance_rest.rs` - REST helpers (exchangeInfo cache, depth snapshot fetch for upcoming local-book sync)
 - `src/generate_config.rs` - writes auto-generated triangles/depth streams to YAML
 - `src/pnl_report.rs` - positive-PnL opportunity report from signal logs
 - `src/config.rs` - config structs + defaults

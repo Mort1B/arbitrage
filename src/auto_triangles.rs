@@ -1,8 +1,14 @@
-use crate::config::{AutoTriangleGenerationConfig, PairRuleConfig, TriangleConfig};
+use crate::{
+    binance_rest::{self, JsonFileCache},
+    config::{AutoTriangleGenerationConfig, PairRuleConfig, TriangleConfig},
+};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 #[derive(Debug, Clone)]
 pub struct GeneratedTriangleUniverse {
@@ -46,13 +52,16 @@ pub async fn generate_from_binance(
         return Err("auto_triangle_generation.assets must contain at least 3 unique assets".into());
     }
 
-    let exchange_info = reqwest::Client::new()
-        .get(&auto_cfg.exchange_info_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<BinanceExchangeInfo>()
-        .await?;
+    let client = reqwest::Client::new();
+    let cache = auto_cfg.exchange_info_cache_enabled.then(|| {
+        JsonFileCache::new(
+            auto_cfg.exchange_info_cache_path.clone(),
+            Duration::from_secs(auto_cfg.exchange_info_cache_ttl_secs),
+        )
+    });
+    let exchange_info: BinanceExchangeInfo =
+        binance_rest::fetch_json_with_cache(&client, &auto_cfg.exchange_info_url, cache.as_ref())
+            .await?;
 
     let universe = generate_from_exchange_info(&assets, auto_cfg, exchange_info.symbols);
     if universe.triangles.is_empty() {
