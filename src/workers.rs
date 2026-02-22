@@ -47,13 +47,13 @@ enum TradeSide {
 }
 
 struct ExecutionFilterOutcome {
-    assumed_start_amount: f64,
-    executable_profit_bps: f64,
-    adjusted_profit_bps: f64,
-    latency_penalty_bps: f64,
+    assumed_start_amount: Decimal,
+    executable_profit_bps: Decimal,
+    adjusted_profit_bps: Decimal,
+    latency_penalty_bps: Decimal,
     execution_filter_passed: bool,
     rejection_reasons: Vec<String>,
-    fee_bps_by_leg: [f64; 3],
+    fee_bps_by_leg: [Decimal; 3],
 }
 
 pub async fn main_worker(
@@ -242,7 +242,11 @@ fn build_triangle_outputs(
         .iter()
         .filter(|point| point.profit > Decimal::ZERO)
         .count();
-    let hit_rate = profitable_levels as f64 / profit_points.len() as f64;
+    let hit_rate = if profit_points.is_empty() {
+        Decimal::ZERO
+    } else {
+        dec_from_usize(profitable_levels) / dec_from_usize(profit_points.len())
+    };
     let avg_profit_dec =
         profits_dec.iter().copied().sum::<Decimal>() / dec_from_usize(profits_dec.len());
     let top_profit_dec = profits_dec.first().copied().unwrap_or(Decimal::ZERO);
@@ -258,8 +262,8 @@ fn build_triangle_outputs(
         &config.exchange_rules,
     );
     let worthy = execution_outcome.execution_filter_passed
-        && execution_outcome.adjusted_profit_bps >= config.signal_min_profit_bps
-        && hit_rate >= config.signal_min_hit_rate;
+        && execution_outcome.adjusted_profit_bps >= dec_from_f64(config.signal_min_profit_bps)
+        && hit_rate >= dec_from_f64(config.signal_min_hit_rate);
 
     if best_point.profit > Decimal::ZERO {
         info!(
@@ -313,10 +317,10 @@ fn build_opportunity_signal(
     profit_points: &[ProfitPoint],
     best_point: ProfitPoint,
     profitable_levels: usize,
-    hit_rate: f64,
-    top_profit_bps: f64,
-    best_profit_bps: f64,
-    avg_profit_bps: f64,
+    hit_rate: Decimal,
+    top_profit_bps: Decimal,
+    best_profit_bps: Decimal,
+    avg_profit_bps: Decimal,
     execution_outcome: &ExecutionFilterOutcome,
     worthy: bool,
     min_profit_bps_threshold: f64,
@@ -341,31 +345,31 @@ fn build_opportunity_signal(
         latency_penalty_bps: execution_outcome.latency_penalty_bps,
         execution_filter_passed: execution_outcome.execution_filter_passed,
         worthy,
-        min_profit_bps_threshold,
-        min_hit_rate_threshold,
+        min_profit_bps_threshold: dec_from_f64(min_profit_bps_threshold),
+        min_hit_rate_threshold: dec_from_f64(min_hit_rate_threshold),
         rejection_reasons: execution_outcome.rejection_reasons.clone(),
         fee_bps_by_leg: execution_outcome.fee_bps_by_leg,
         best_level_quotes: [
             models::TriangleLegQuote {
                 pair: triangle_config.pairs[0].clone(),
-                ask_price: dec_to_f64(start_pair_data.data.asks[i].price),
-                ask_size: dec_to_f64(start_pair_data.data.asks[i].size),
-                bid_price: dec_to_f64(start_pair_data.data.bids[i].price),
-                bid_size: dec_to_f64(start_pair_data.data.bids[i].size),
+                ask_price: start_pair_data.data.asks[i].price,
+                ask_size: start_pair_data.data.asks[i].size,
+                bid_price: start_pair_data.data.bids[i].price,
+                bid_size: start_pair_data.data.bids[i].size,
             },
             models::TriangleLegQuote {
                 pair: triangle_config.pairs[1].clone(),
-                ask_price: dec_to_f64(mid_pair_data.data.asks[i].price),
-                ask_size: dec_to_f64(mid_pair_data.data.asks[i].size),
-                bid_price: dec_to_f64(mid_pair_data.data.bids[i].price),
-                bid_size: dec_to_f64(mid_pair_data.data.bids[i].size),
+                ask_price: mid_pair_data.data.asks[i].price,
+                ask_size: mid_pair_data.data.asks[i].size,
+                bid_price: mid_pair_data.data.bids[i].price,
+                bid_size: mid_pair_data.data.bids[i].size,
             },
             models::TriangleLegQuote {
                 pair: triangle_config.pairs[2].clone(),
-                ask_price: dec_to_f64(end_pair_data.data.asks[i].price),
-                ask_size: dec_to_f64(end_pair_data.data.asks[i].size),
-                bid_price: dec_to_f64(end_pair_data.data.bids[i].price),
-                bid_size: dec_to_f64(end_pair_data.data.bids[i].size),
+                ask_price: end_pair_data.data.asks[i].price,
+                ask_size: end_pair_data.data.asks[i].size,
+                bid_price: end_pair_data.data.bids[i].price,
+                bid_size: end_pair_data.data.bids[i].size,
             },
         ],
     }
@@ -378,7 +382,6 @@ fn now_unix_ms() -> u64 {
     }
 }
 
-#[cfg(test)]
 fn dec_from_f64(value: f64) -> Decimal {
     Decimal::from_f64(value).unwrap_or(Decimal::ZERO)
 }
@@ -399,8 +402,8 @@ fn dec_epsilon() -> Decimal {
     Decimal::new(1, 18)
 }
 
-fn profit_to_bps(profit: Decimal) -> f64 {
-    dec_to_f64(profit * dec_from_i64(10_000))
+fn profit_to_bps(profit: Decimal) -> Decimal {
+    profit * dec_from_i64(10_000)
 }
 
 fn evaluate_execution_filters(
@@ -416,13 +419,9 @@ fn evaluate_execution_filters(
         fee_bps_for_pair(rules, &triangle_config.pairs[1]),
         fee_bps_for_pair(rules, &triangle_config.pairs[2]),
     ];
-    let fee_bps_by_leg = [
-        dec_to_f64(fee_bps_by_leg_dec[0]),
-        dec_to_f64(fee_bps_by_leg_dec[1]),
-        dec_to_f64(fee_bps_by_leg_dec[2]),
-    ];
+    let fee_bps_by_leg = fee_bps_by_leg_dec;
     let assumed_start_amount_dec = assumed_start_amount_for_asset(rules, &triangle_config.parts[0]);
-    let assumed_start_amount = dec_to_f64(assumed_start_amount_dec);
+    let assumed_start_amount = assumed_start_amount_dec;
 
     if !rules.enabled {
         let raw_profit = simulate_triangle_path_amount(
@@ -440,12 +439,12 @@ fn evaluate_execution_filters(
             .map(|final_amount| {
                 profit_to_bps((final_amount / assumed_start_amount_dec) - Decimal::ONE)
             })
-            .unwrap_or(0.0);
+            .unwrap_or(Decimal::ZERO);
         return ExecutionFilterOutcome {
             assumed_start_amount,
             executable_profit_bps,
             adjusted_profit_bps: executable_profit_bps,
-            latency_penalty_bps: 0.0,
+            latency_penalty_bps: Decimal::ZERO,
             execution_filter_passed: true,
             rejection_reasons: Vec::new(),
             fee_bps_by_leg,
@@ -472,11 +471,11 @@ fn evaluate_execution_filters(
         ),
         Err(reason) => {
             rejection_reasons.push(reason);
-            (false, 0.0)
+            (false, Decimal::ZERO)
         }
     };
 
-    let latency_penalty_bps = dec_to_f64(rules.latency_penalty_bps.max(Decimal::ZERO));
+    let latency_penalty_bps = rules.latency_penalty_bps.max(Decimal::ZERO);
     let adjusted_profit_bps = executable_profit_bps - latency_penalty_bps;
 
     ExecutionFilterOutcome {

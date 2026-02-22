@@ -1,4 +1,5 @@
 use crate::models::TriangleOpportunitySignal;
+use rust_decimal::prelude::ToPrimitive;
 use std::{
     collections::HashMap,
     fs::File,
@@ -63,9 +64,11 @@ fn analyze_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let stats = by_triangle.entry(key).or_default();
         stats.samples += 1;
         stats.worthy_samples += usize::from(signal.worthy);
-        stats.sum_best_profit_bps += signal.best_profit_bps;
-        stats.max_best_profit_bps = stats.max_best_profit_bps.max(signal.best_profit_bps);
-        stats.sum_hit_rate += signal.hit_rate;
+        let best_profit_bps = signal.best_profit_bps.to_f64().unwrap_or(0.0);
+        let hit_rate = signal.hit_rate.to_f64().unwrap_or(0.0);
+        stats.sum_best_profit_bps += best_profit_bps;
+        stats.max_best_profit_bps = stats.max_best_profit_bps.max(best_profit_bps);
+        stats.sum_hit_rate += hit_rate;
     }
 
     let mut rows = by_triangle.into_iter().collect::<Vec<_>>();

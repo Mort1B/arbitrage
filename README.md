@@ -215,6 +215,7 @@ Precision note:
 
 - `exchange_rules` numeric values are parsed into `Decimal` for execution-grade calculations
 - YAML values can be written as normal numbers (for example `7.5`) and are parsed precisely into decimal values
+- Logged signal numeric fields are serialized from `Decimal` (JSON string values) to preserve precision across tooling
 
 ## Signal Output Format (JSONL)
 
@@ -233,6 +234,11 @@ Each line in `signal_log_path` is a JSON object (`TriangleOpportunitySignal`) wi
 - `best_level_index`
 - `worthy`
 - `best_level_quotes` (ask/bid + size for each leg)
+
+Numeric precision:
+
+- Decimal-valued metrics and quotes are written as JSON strings (for example `"best_profit_bps":"12.3456"`)
+- Offline tools in this repo (`analyze`, `pnl-report`, `simulate`) read this format directly
 
 This format is intended to be consumed later by:
 
@@ -265,7 +271,9 @@ Clients can also send `ping` and receive `pong`.
 
 ## Notes / Limitations
 
-- Core triangle/execution math uses `rust_decimal`, but signal/report output fields are still serialized as `f64` for compatibility
+- Core triangle/execution math uses `rust_decimal`
+- Signal log numeric fields are emitted as decimal strings for precision-preserving storage
+- Console reports still format values for readability (some aggregates are displayed as rounded decimals)
 - Does not place orders
 - Does not model slippage, fees per symbol/tier, min notional, balances, or risk limits
 - `worthy` is a heuristic threshold, not a trading decision
@@ -274,5 +282,5 @@ Clients can also send `ping` and receive `pong`.
 
 1. Add Binance `exchangeInfo` cache/persistence to avoid fetching on every startup in auto-generation mode.
 2. Add a live paper-trading runtime that consumes signals directly (not only offline replay).
-3. If execution precision is required end-to-end, move signal/report numeric fields from `f64` to decimal-string/`Decimal` representations.
+3. Move simulator/report internal aggregation math from `f64` to `Decimal` if you want precision-preserving analytics end-to-end.
 4. Add execution adapter interfaces before implementing a real bot.

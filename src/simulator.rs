@@ -1,4 +1,5 @@
 use crate::models::TriangleOpportunitySignal;
+use rust_decimal::prelude::ToPrimitive;
 use std::{
     collections::HashMap,
     fs::File,
@@ -240,7 +241,10 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        if signal.adjusted_profit_bps < config.min_adjusted_profit_bps {
+        let adjusted_profit_bps = signal.adjusted_profit_bps.to_f64().unwrap_or(0.0);
+        let assumed_start_amount = signal.assumed_start_amount.to_f64().unwrap_or(0.0);
+
+        if adjusted_profit_bps < config.min_adjusted_profit_bps {
             summary.skipped_profit_threshold += 1;
             set_active(&mut active_state_by_triangle, &signal, false);
             continue;
@@ -272,7 +276,7 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
         let asset_key = normalize_asset_key(&start_asset);
         seed_balance_if_needed(&mut balances, &asset_key, &signal, config);
         let available_balance = *balances.get(&asset_key).unwrap_or(&0.0);
-        let signal_cap = signal.assumed_start_amount * config.max_position_vs_signal;
+        let signal_cap = assumed_start_amount * config.max_position_vs_signal;
         let desired_position = (available_balance * config.position_size_pct).min(signal_cap);
         let position_size = desired_position.min(available_balance);
 
@@ -282,14 +286,14 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let pnl_asset = position_size * signal.adjusted_profit_bps / 10_000.0;
-        let is_win = signal.adjusted_profit_bps > 0.0;
+        let pnl_asset = position_size * adjusted_profit_bps / 10_000.0;
+        let is_win = adjusted_profit_bps > 0.0;
         if let Some(balance) = balances.get_mut(&asset_key) {
             *balance += pnl_asset;
         }
 
         summary.executed_trades += 1;
-        summary.sum_adjusted_bps += signal.adjusted_profit_bps;
+        summary.sum_adjusted_bps += adjusted_profit_bps;
         summary.total_notional_deployed += position_size;
         if is_win {
             summary.wins += 1;
@@ -305,10 +309,10 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
             });
         asset_stats.trades += 1;
         asset_stats.sum_pnl_asset += pnl_asset;
-        asset_stats.sum_adjusted_bps += signal.adjusted_profit_bps;
+        asset_stats.sum_adjusted_bps += adjusted_profit_bps;
         asset_stats.sum_notional_deployed += position_size;
-        asset_stats.max_adjusted_bps = asset_stats.max_adjusted_bps.max(signal.adjusted_profit_bps);
-        asset_stats.min_adjusted_bps = asset_stats.min_adjusted_bps.min(signal.adjusted_profit_bps);
+        asset_stats.max_adjusted_bps = asset_stats.max_adjusted_bps.max(adjusted_profit_bps);
+        asset_stats.min_adjusted_bps = asset_stats.min_adjusted_bps.min(adjusted_profit_bps);
         if is_win {
             asset_stats.wins += 1;
         } else {
@@ -324,11 +328,9 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
         triangle_stats.trades += 1;
         triangle_stats.sum_pnl_asset += pnl_asset;
-        triangle_stats.sum_adjusted_bps += signal.adjusted_profit_bps;
+        triangle_stats.sum_adjusted_bps += adjusted_profit_bps;
         triangle_stats.sum_notional_deployed += position_size;
-        triangle_stats.max_adjusted_bps = triangle_stats
-            .max_adjusted_bps
-            .max(signal.adjusted_profit_bps);
+        triangle_stats.max_adjusted_bps = triangle_stats.max_adjusted_bps.max(adjusted_profit_bps);
         if is_win {
             triangle_stats.wins += 1;
         }
@@ -373,7 +375,7 @@ fn seed_balance_if_needed(
     }
     balances.insert(
         asset_key.to_string(),
-        signal.assumed_start_amount * config.seed_multiplier,
+        signal.assumed_start_amount.to_f64().unwrap_or(0.0) * config.seed_multiplier,
     );
 }
 

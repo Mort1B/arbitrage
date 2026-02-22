@@ -1,4 +1,5 @@
 use crate::models::TriangleOpportunitySignal;
+use rust_decimal::prelude::ToPrimitive;
 use std::{
     collections::HashMap,
     fs::File,
@@ -152,14 +153,17 @@ fn run(cfg: PnlReportConfig) -> Result<(), Box<dyn std::error::Error>> {
         if cfg.require_worthy && !signal.worthy {
             continue;
         }
-        if signal.adjusted_profit_bps < cfg.min_adjusted_bps {
+        let adjusted_profit_bps = signal.adjusted_profit_bps.to_f64().unwrap_or(0.0);
+        if adjusted_profit_bps < cfg.min_adjusted_bps {
             continue;
         }
         considered += 1;
 
         let start_asset = signal.triangle_parts[0].clone();
-        let raw_pnl = signal.assumed_start_amount * signal.executable_profit_bps / 10_000.0;
-        let adjusted_pnl = signal.assumed_start_amount * signal.adjusted_profit_bps / 10_000.0;
+        let assumed_start_amount = signal.assumed_start_amount.to_f64().unwrap_or(0.0);
+        let executable_profit_bps = signal.executable_profit_bps.to_f64().unwrap_or(0.0);
+        let raw_pnl = assumed_start_amount * executable_profit_bps / 10_000.0;
+        let adjusted_pnl = assumed_start_amount * adjusted_profit_bps / 10_000.0;
         let key = signal.triangle_pairs.join(" -> ");
 
         let stats = by_triangle.entry(key).or_default();
@@ -169,14 +173,14 @@ fn run(cfg: PnlReportConfig) -> Result<(), Box<dyn std::error::Error>> {
             stats.max_adjusted_bps = f64::NEG_INFINITY;
         }
         stats.samples += 1;
-        if signal.adjusted_profit_bps > 0.0 {
+        if adjusted_profit_bps > 0.0 {
             stats.positive_adjusted_samples += 1;
         }
         stats.sum_raw_pnl += raw_pnl;
         stats.sum_adjusted_pnl += adjusted_pnl;
-        stats.sum_adjusted_bps += signal.adjusted_profit_bps;
+        stats.sum_adjusted_bps += adjusted_profit_bps;
         stats.max_adjusted_pnl = stats.max_adjusted_pnl.max(adjusted_pnl);
-        stats.max_adjusted_bps = stats.max_adjusted_bps.max(signal.adjusted_profit_bps);
+        stats.max_adjusted_bps = stats.max_adjusted_bps.max(adjusted_profit_bps);
         stats.last_timestamp_ms = stats.last_timestamp_ms.max(signal.timestamp_ms);
     }
 
