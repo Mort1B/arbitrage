@@ -9,6 +9,7 @@ mod auto_triangles;
 mod config;
 mod generate_config;
 mod handlers;
+mod market_state;
 mod models;
 mod orderbook;
 mod pnl_report;

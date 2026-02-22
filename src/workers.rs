@@ -1,5 +1,6 @@
 use crate::{
     config::{AppConfig, ExchangeRulesConfig, PairRuleConfig, TriangleConfig},
+    market_state::MarketState,
     models::{self, DepthStreamWrapper},
     Clients, SignalLogSender,
 };
@@ -8,7 +9,7 @@ use log::{debug, error, info, warn};
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     net::TcpStream,
@@ -62,8 +63,7 @@ pub async fn main_worker(
     mut socket: BinanceSocket,
     signal_log_sender: Option<SignalLogSender>,
 ) {
-    let mut pairs_data: HashMap<String, DepthStreamWrapper> =
-        HashMap::with_capacity(config.depth_streams.len());
+    let mut market_state = MarketState::with_capacity(config.depth_streams.len());
     let publish_every = Duration::from_millis(u64::from(config.update_interval.max(1)));
     let mut last_publish = Instant::now();
 
@@ -91,14 +91,13 @@ pub async fn main_worker(
                     }
                 };
 
-                let pair_key = pair_key_from_stream(&parsed.stream).to_owned();
                 debug!(
                     "received {} ({} bids / {} asks)",
                     parsed.stream,
                     parsed.data.bids.len(),
                     parsed.data.asks.len()
                 );
-                pairs_data.insert(pair_key, parsed);
+                market_state.apply_depth_snapshot(parsed);
             }
             BinanceMessage::Ping(payload) => {
                 if let Err(e) = socket.send(BinanceMessage::Pong(payload)).await {
@@ -121,7 +120,7 @@ pub async fn main_worker(
         last_publish = Instant::now();
 
         if let Err(e) =
-            publish_triangle_updates(&clients, &config, &pairs_data, signal_log_sender.as_ref())
+            publish_triangle_updates(&clients, &config, &market_state, signal_log_sender.as_ref())
                 .await
         {
             warn!("failed to publish triangle updates: {}", e);
@@ -129,14 +128,10 @@ pub async fn main_worker(
     }
 }
 
-fn pair_key_from_stream(stream: &str) -> &str {
-    stream.split_once('@').map_or(stream, |(pair, _)| pair)
-}
-
 async fn publish_triangle_updates(
     clients: &Clients,
     config: &AppConfig,
-    pairs_data: &HashMap<String, DepthStreamWrapper>,
+    market_state: &MarketState,
     signal_log_sender: Option<&SignalLogSender>,
 ) -> Result<(), serde_json::Error> {
     let recipients = {
@@ -152,9 +147,33 @@ async fn publish_triangle_updates(
     }
 
     let mut stale_client_ids = HashSet::new();
+    let depth_limit = config.results_limit.max(1) as usize;
 
     for triangle in &config.triangles {
-        let Some(outputs) = build_triangle_outputs(pairs_data, triangle, config)? else {
+        let Some(start_pair_data) =
+            market_state.export_depth_wrapper(&triangle.pairs[0], depth_limit)
+        else {
+            continue;
+        };
+        let Some(mid_pair_data) =
+            market_state.export_depth_wrapper(&triangle.pairs[1], depth_limit)
+        else {
+            continue;
+        };
+        let Some(end_pair_data) =
+            market_state.export_depth_wrapper(&triangle.pairs[2], depth_limit)
+        else {
+            continue;
+        };
+
+        let Some(outputs) = build_triangle_outputs(
+            triangle,
+            &start_pair_data,
+            &mid_pair_data,
+            &end_pair_data,
+            config,
+        )?
+        else {
             continue;
         };
 
@@ -194,21 +213,14 @@ async fn publish_triangle_updates(
 }
 
 fn build_triangle_outputs(
-    pairs_data: &HashMap<String, DepthStreamWrapper>,
     triangle_config: &TriangleConfig,
+    start_pair_data: &DepthStreamWrapper,
+    mid_pair_data: &DepthStreamWrapper,
+    end_pair_data: &DepthStreamWrapper,
     config: &AppConfig,
 ) -> Result<Option<TriangleOutputs>, serde_json::Error> {
     let [start_pair, mid_pair, end_pair] = &triangle_config.pairs;
     let [part_a, part_b, part_c] = &triangle_config.parts;
-
-    let (start_pair_data, mid_pair_data, end_pair_data) = match (
-        pairs_data.get(start_pair),
-        pairs_data.get(mid_pair),
-        pairs_data.get(end_pair),
-    ) {
-        (Some(s), Some(m), Some(e)) => (s, m, e),
-        _ => return Ok(None),
-    };
 
     let profit_points = calculate_triangle_profits(
         start_pair_data,
