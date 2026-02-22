@@ -1,6 +1,6 @@
 use crate::{
     config::{AppConfig, ExchangeRulesConfig, PairRuleConfig, TriangleConfig},
-    market_state::MarketState,
+    market_state::{MarketDepthView, MarketState},
     models::{self, DepthStreamWrapper},
     Clients, SignalLogSender,
 };
@@ -39,6 +39,17 @@ struct ProfitPoint {
 struct TriangleOutputs {
     ws_payload: String,
     signal_line: String,
+}
+
+#[derive(Clone, Copy)]
+struct TriangleBookTiming {
+    signal_timestamp_ms: u64,
+    book_receive_timestamp_ms_by_leg: [u64; 3],
+    book_age_ms_by_leg: [u64; 3],
+    min_book_age_ms: u64,
+    max_book_age_ms: u64,
+    max_book_age_threshold_ms: u64,
+    book_freshness_passed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -97,7 +108,7 @@ pub async fn main_worker(
                     parsed.data.bids.len(),
                     parsed.data.asks.len()
                 );
-                market_state.apply_depth_snapshot(parsed);
+                market_state.apply_depth_snapshot(parsed, now_unix_ms());
             }
             BinanceMessage::Ping(payload) => {
                 if let Err(e) = socket.send(BinanceMessage::Pong(payload)).await {
@@ -148,30 +159,33 @@ async fn publish_triangle_updates(
 
     let mut stale_client_ids = HashSet::new();
     let depth_limit = config.results_limit.max(1) as usize;
+    let signal_timestamp_ms = now_unix_ms();
 
     for triangle in &config.triangles {
-        let Some(start_pair_data) =
-            market_state.export_depth_wrapper(&triangle.pairs[0], depth_limit)
+        let Some(start_view) = market_state.export_depth_view(&triangle.pairs[0], depth_limit)
         else {
             continue;
         };
-        let Some(mid_pair_data) =
-            market_state.export_depth_wrapper(&triangle.pairs[1], depth_limit)
-        else {
+        let Some(mid_view) = market_state.export_depth_view(&triangle.pairs[1], depth_limit) else {
             continue;
         };
-        let Some(end_pair_data) =
-            market_state.export_depth_wrapper(&triangle.pairs[2], depth_limit)
-        else {
+        let Some(end_view) = market_state.export_depth_view(&triangle.pairs[2], depth_limit) else {
             continue;
         };
+
+        let book_timing = build_triangle_book_timing(
+            signal_timestamp_ms,
+            [&start_view, &mid_view, &end_view],
+            config.max_book_age_ms,
+        );
 
         let Some(outputs) = build_triangle_outputs(
             triangle,
-            &start_pair_data,
-            &mid_pair_data,
-            &end_pair_data,
+            &start_view.depth,
+            &mid_view.depth,
+            &end_view.depth,
             config,
+            book_timing,
         )?
         else {
             continue;
@@ -218,6 +232,7 @@ fn build_triangle_outputs(
     mid_pair_data: &DepthStreamWrapper,
     end_pair_data: &DepthStreamWrapper,
     config: &AppConfig,
+    book_timing: TriangleBookTiming,
 ) -> Result<Option<TriangleOutputs>, serde_json::Error> {
     let [start_pair, mid_pair, end_pair] = &triangle_config.pairs;
     let [part_a, part_b, part_c] = &triangle_config.parts;
@@ -275,7 +290,8 @@ fn build_triangle_outputs(
     );
     let worthy = execution_outcome.execution_filter_passed
         && execution_outcome.adjusted_profit_bps >= dec_from_f64(config.signal_min_profit_bps)
-        && hit_rate >= dec_from_f64(config.signal_min_hit_rate);
+        && hit_rate >= dec_from_f64(config.signal_min_hit_rate)
+        && book_timing.book_freshness_passed;
 
     if best_point.profit > Decimal::ZERO {
         info!(
@@ -309,6 +325,7 @@ fn build_triangle_outputs(
         best_profit_bps,
         avg_profit_bps,
         &execution_outcome,
+        book_timing,
         worthy,
         config.signal_min_profit_bps,
         config.signal_min_hit_rate,
@@ -334,13 +351,21 @@ fn build_opportunity_signal(
     best_profit_bps: Decimal,
     avg_profit_bps: Decimal,
     execution_outcome: &ExecutionFilterOutcome,
+    book_timing: TriangleBookTiming,
     worthy: bool,
     min_profit_bps_threshold: f64,
     min_hit_rate_threshold: f64,
 ) -> models::TriangleOpportunitySignal {
     let i = best_point.level_index;
+    let mut rejection_reasons = execution_outcome.rejection_reasons.clone();
+    if !book_timing.book_freshness_passed {
+        rejection_reasons.push(format!(
+            "stale_books max_age_ms={} threshold_ms={}",
+            book_timing.max_book_age_ms, book_timing.max_book_age_threshold_ms
+        ));
+    }
     models::TriangleOpportunitySignal {
-        timestamp_ms: now_unix_ms(),
+        timestamp_ms: book_timing.signal_timestamp_ms,
         exchange: "binance".to_string(),
         triangle_parts: triangle_config.parts.clone(),
         triangle_pairs: triangle_config.pairs.clone(),
@@ -355,11 +380,16 @@ fn build_opportunity_signal(
         executable_profit_bps: execution_outcome.executable_profit_bps,
         adjusted_profit_bps: execution_outcome.adjusted_profit_bps,
         latency_penalty_bps: execution_outcome.latency_penalty_bps,
+        book_receive_timestamp_ms_by_leg: book_timing.book_receive_timestamp_ms_by_leg,
+        book_age_ms_by_leg: book_timing.book_age_ms_by_leg,
+        min_book_age_ms: book_timing.min_book_age_ms,
+        max_book_age_ms: book_timing.max_book_age_ms,
+        book_freshness_passed: book_timing.book_freshness_passed,
         execution_filter_passed: execution_outcome.execution_filter_passed,
         worthy,
         min_profit_bps_threshold: dec_from_f64(min_profit_bps_threshold),
         min_hit_rate_threshold: dec_from_f64(min_hit_rate_threshold),
-        rejection_reasons: execution_outcome.rejection_reasons.clone(),
+        rejection_reasons,
         fee_bps_by_leg: execution_outcome.fee_bps_by_leg,
         best_level_quotes: [
             models::TriangleLegQuote {
@@ -391,6 +421,42 @@ fn now_unix_ms() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_millis().min(u128::from(u64::MAX)) as u64,
         Err(_) => 0,
+    }
+}
+
+fn build_triangle_book_timing(
+    signal_timestamp_ms: u64,
+    views: [&MarketDepthView; 3],
+    max_book_age_threshold_ms: u64,
+) -> TriangleBookTiming {
+    let receive = [
+        views[0].last_receive_time_ms,
+        views[1].last_receive_time_ms,
+        views[2].last_receive_time_ms,
+    ];
+    let ages = receive.map(|ts| {
+        if ts == 0 {
+            u64::MAX
+        } else {
+            signal_timestamp_ms.saturating_sub(ts)
+        }
+    });
+    let min_age = *ages.iter().min().unwrap_or(&0);
+    let max_age = *ages.iter().max().unwrap_or(&0);
+    let freshness_passed = if max_book_age_threshold_ms == 0 {
+        true
+    } else {
+        max_age <= max_book_age_threshold_ms
+    };
+
+    TriangleBookTiming {
+        signal_timestamp_ms,
+        book_receive_timestamp_ms_by_leg: receive,
+        book_age_ms_by_leg: ages,
+        min_book_age_ms: min_age,
+        max_book_age_ms: max_age,
+        max_book_age_threshold_ms,
+        book_freshness_passed: freshness_passed,
     }
 }
 

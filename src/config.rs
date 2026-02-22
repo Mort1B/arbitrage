@@ -34,6 +34,10 @@ const fn default_signal_min_hit_rate() -> f64 {
     0.2
 }
 
+const fn default_max_book_age_ms() -> u64 {
+    1_500
+}
+
 const fn default_exchange_rules_enabled() -> bool {
     true
 }
@@ -72,6 +76,18 @@ const fn default_auto_triangle_generation_max_triangles() -> usize {
 
 const fn default_auto_triangle_generation_merge_pair_rules() -> bool {
     true
+}
+
+const fn default_auto_triangle_generation_exchange_info_cache_enabled() -> bool {
+    true
+}
+
+fn default_auto_triangle_generation_exchange_info_cache_path() -> String {
+    "data/cache/binance_exchange_info.json".to_string()
+}
+
+const fn default_auto_triangle_generation_exchange_info_cache_ttl_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -154,6 +170,7 @@ exchange_rules:
         assert_eq!(rule.min_qty, Some(Decimal::new(1, 3)));
         assert_eq!(rule.qty_step, Some(Decimal::new(1, 3)));
         assert_eq!(rule.fee_bps, Some(Decimal::new(75, 1)));
+        assert_eq!(cfg.max_book_age_ms, 1_500);
     }
 }
 
@@ -163,6 +180,9 @@ pub struct AutoTriangleGenerationConfig {
     pub enabled: bool,
     pub assets: Vec<String>,
     pub exchange_info_url: String,
+    pub exchange_info_cache_enabled: bool,
+    pub exchange_info_cache_path: String,
+    pub exchange_info_cache_ttl_secs: u64,
     pub include_reverse_cycles: bool,
     pub include_all_starts: bool,
     pub max_triangles: usize,
@@ -175,6 +195,9 @@ impl Default for AutoTriangleGenerationConfig {
             enabled: default_auto_triangle_generation_enabled(),
             assets: Vec::new(),
             exchange_info_url: default_auto_triangle_generation_exchange_info_url(),
+            exchange_info_cache_enabled: default_auto_triangle_generation_exchange_info_cache_enabled(),
+            exchange_info_cache_path: default_auto_triangle_generation_exchange_info_cache_path(),
+            exchange_info_cache_ttl_secs: default_auto_triangle_generation_exchange_info_cache_ttl_secs(),
             include_reverse_cycles: default_auto_triangle_generation_include_reverse_cycles(),
             include_all_starts: default_auto_triangle_generation_include_all_starts(),
             max_triangles: default_auto_triangle_generation_max_triangles(),
@@ -212,6 +235,8 @@ pub struct AppConfig {
     pub signal_min_profit_bps: f64,
     #[serde(default = "default_signal_min_hit_rate")]
     pub signal_min_hit_rate: f64,
+    #[serde(default = "default_max_book_age_ms")]
+    pub max_book_age_ms: u64,
     #[serde(default)]
     pub exchange_rules: ExchangeRulesConfig,
     #[serde(default)]

@@ -113,13 +113,15 @@ impl OrderBook {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: OrderBookSnapshot) {
+        let snapshot_time_ms = snapshot.snapshot_time_ms;
         self.bids.clear();
         self.asks.clear();
         apply_side_updates(&mut self.bids, snapshot.bids);
         apply_side_updates(&mut self.asks, snapshot.asks);
         self.synced = true;
         self.last_update_id = Some(snapshot.last_update_id);
-        self.last_snapshot_time_ms = snapshot.snapshot_time_ms;
+        self.last_snapshot_time_ms = snapshot_time_ms;
+        self.last_receive_time_ms = snapshot_time_ms;
     }
 
     pub fn apply_diff(&mut self, diff: OrderBookDiff) -> Result<ApplyOutcome, OrderBookError> {

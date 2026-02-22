@@ -6,6 +6,7 @@ use warp::{ws::Message, Filter, Rejection};
 
 mod analyzer;
 mod auto_triangles;
+mod binance_rest;
 mod config;
 mod generate_config;
 mod handlers;

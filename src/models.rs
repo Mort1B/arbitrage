@@ -3,6 +3,10 @@ use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
 
+const fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct OfferData {
     #[serde(deserialize_with = "de_decimal_from_str")]
@@ -59,6 +63,16 @@ pub struct TriangleOpportunitySignal {
     pub executable_profit_bps: Decimal,
     pub adjusted_profit_bps: Decimal,
     pub latency_penalty_bps: Decimal,
+    #[serde(default)]
+    pub book_receive_timestamp_ms_by_leg: [u64; 3],
+    #[serde(default)]
+    pub book_age_ms_by_leg: [u64; 3],
+    #[serde(default)]
+    pub min_book_age_ms: u64,
+    #[serde(default)]
+    pub max_book_age_ms: u64,
+    #[serde(default = "default_true")]
+    pub book_freshness_passed: bool,
     pub execution_filter_passed: bool,
     pub worthy: bool,
     pub min_profit_bps_threshold: Decimal,
@@ -95,6 +109,11 @@ mod tests {
             executable_profit_bps: Decimal::new(50, 1),
             adjusted_profit_bps: Decimal::new(30, 1),
             latency_penalty_bps: Decimal::new(20, 1),
+            book_receive_timestamp_ms_by_leg: [1, 2, 3],
+            book_age_ms_by_leg: [10, 20, 30],
+            min_book_age_ms: 10,
+            max_book_age_ms: 30,
+            book_freshness_passed: true,
             execution_filter_passed: true,
             worthy: true,
             min_profit_bps_threshold: Decimal::new(80, 1),

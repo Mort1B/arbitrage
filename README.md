@@ -209,6 +209,7 @@ Important keys:
 - `signal_log_channel_capacity`: buffered log queue size
 - `signal_min_profit_bps`: threshold for marking a signal as `worthy`
 - `signal_min_hit_rate`: threshold for marking a signal as `worthy`
+- `max_book_age_ms`: freshness gate for triangle legs (0 disables age gating)
 - `exchange_rules`: execution filters and assumptions (min notional, lot size, fees, assumed start amount)
 
 Precision note:
@@ -232,6 +233,11 @@ Each line in `signal_log_path` is a JSON object (`TriangleOpportunitySignal`) wi
 - `best_profit_bps`
 - `avg_profit_bps`
 - `best_level_index`
+- `book_receive_timestamp_ms_by_leg`
+- `book_age_ms_by_leg`
+- `min_book_age_ms`
+- `max_book_age_ms`
+- `book_freshness_passed`
 - `worthy`
 - `best_level_quotes` (ask/bid + size for each leg)
 
@@ -274,6 +280,7 @@ Clients can also send `ping` and receive `pong`.
 - Core triangle/execution math uses `rust_decimal`
 - Signal log numeric fields are emitted as decimal strings for precision-preserving storage
 - Offline tools (`analyze`, `pnl-report`, `simulate`) use `Decimal` internally for signal-derived calculations/aggregates
+- `worthy` now also depends on market-data freshness (`max_book_age_ms`) in addition to profit/hit-rate/execution filters
 - Console reports still format values for readability (some values are displayed as rounded decimals)
 - Does not place orders
 - Does not model slippage, fees per symbol/tier, min notional, balances, or risk limits
