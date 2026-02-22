@@ -5,6 +5,8 @@ use crate::{
 };
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use rust_decimal::Decimal;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,7 +32,7 @@ struct TriangleArbitragePayload<'a> {
 #[derive(Clone, Copy)]
 struct ProfitPoint {
     level_index: usize,
-    profit: f64,
+    profit: Decimal,
 }
 
 struct TriangleOutputs {
@@ -223,25 +225,30 @@ fn build_triangle_outputs(
         return Ok(None);
     }
 
-    let profits = profit_points
+    let profits_dec = profit_points
         .iter()
         .map(|point| point.profit)
+        .collect::<Vec<_>>();
+    let profits = profits_dec
+        .iter()
+        .map(|value| dec_to_f64(*value))
         .collect::<Vec<_>>();
     let best_point = profit_points
         .iter()
         .copied()
-        .max_by(|a, b| a.profit.total_cmp(&b.profit))
+        .max_by(|a, b| a.profit.cmp(&b.profit))
         .expect("profit_points not empty");
     let profitable_levels = profit_points
         .iter()
-        .filter(|point| point.profit > 0.0)
+        .filter(|point| point.profit > Decimal::ZERO)
         .count();
     let hit_rate = profitable_levels as f64 / profit_points.len() as f64;
-    let avg_profit = profits.iter().sum::<f64>() / profits.len() as f64;
-    let top_profit = profits.first().copied().unwrap_or_default();
-    let best_profit_bps = best_point.profit * 10_000.0;
-    let top_profit_bps = top_profit * 10_000.0;
-    let avg_profit_bps = avg_profit * 10_000.0;
+    let avg_profit_dec =
+        profits_dec.iter().copied().sum::<Decimal>() / dec_from_usize(profits_dec.len());
+    let top_profit_dec = profits_dec.first().copied().unwrap_or(Decimal::ZERO);
+    let best_profit_bps = profit_to_bps(best_point.profit);
+    let top_profit_bps = profit_to_bps(top_profit_dec);
+    let avg_profit_bps = profit_to_bps(avg_profit_dec);
     let execution_outcome = evaluate_execution_filters(
         triangle_config,
         start_pair_data,
@@ -254,12 +261,12 @@ fn build_triangle_outputs(
         && execution_outcome.adjusted_profit_bps >= config.signal_min_profit_bps
         && hit_rate >= config.signal_min_hit_rate;
 
-    if best_point.profit > 0.0 {
+    if best_point.profit > Decimal::ZERO {
         info!(
             target: "profit",
             "{:?} best profit: {:.5}% ({} {})",
             [part_a, part_b, part_c],
-            best_point.profit * 100.0,
+            dec_to_f64(best_point.profit * dec_from_i64(100)),
             best_point.profit,
             part_a
         );
@@ -341,24 +348,24 @@ fn build_opportunity_signal(
         best_level_quotes: [
             models::TriangleLegQuote {
                 pair: triangle_config.pairs[0].clone(),
-                ask_price: start_pair_data.data.asks[i].price,
-                ask_size: start_pair_data.data.asks[i].size,
-                bid_price: start_pair_data.data.bids[i].price,
-                bid_size: start_pair_data.data.bids[i].size,
+                ask_price: dec_to_f64(start_pair_data.data.asks[i].price),
+                ask_size: dec_to_f64(start_pair_data.data.asks[i].size),
+                bid_price: dec_to_f64(start_pair_data.data.bids[i].price),
+                bid_size: dec_to_f64(start_pair_data.data.bids[i].size),
             },
             models::TriangleLegQuote {
                 pair: triangle_config.pairs[1].clone(),
-                ask_price: mid_pair_data.data.asks[i].price,
-                ask_size: mid_pair_data.data.asks[i].size,
-                bid_price: mid_pair_data.data.bids[i].price,
-                bid_size: mid_pair_data.data.bids[i].size,
+                ask_price: dec_to_f64(mid_pair_data.data.asks[i].price),
+                ask_size: dec_to_f64(mid_pair_data.data.asks[i].size),
+                bid_price: dec_to_f64(mid_pair_data.data.bids[i].price),
+                bid_size: dec_to_f64(mid_pair_data.data.bids[i].size),
             },
             models::TriangleLegQuote {
                 pair: triangle_config.pairs[2].clone(),
-                ask_price: end_pair_data.data.asks[i].price,
-                ask_size: end_pair_data.data.asks[i].size,
-                bid_price: end_pair_data.data.bids[i].price,
-                bid_size: end_pair_data.data.bids[i].size,
+                ask_price: dec_to_f64(end_pair_data.data.asks[i].price),
+                ask_size: dec_to_f64(end_pair_data.data.asks[i].size),
+                bid_price: dec_to_f64(end_pair_data.data.bids[i].price),
+                bid_size: dec_to_f64(end_pair_data.data.bids[i].size),
             },
         ],
     }
@@ -369,6 +376,30 @@ fn now_unix_ms() -> u64 {
         Ok(duration) => duration.as_millis().min(u128::from(u64::MAX)) as u64,
         Err(_) => 0,
     }
+}
+
+fn dec_from_f64(value: f64) -> Decimal {
+    Decimal::from_f64(value).unwrap_or(Decimal::ZERO)
+}
+
+fn dec_from_i64(value: i64) -> Decimal {
+    Decimal::from_i64(value).unwrap_or(Decimal::ZERO)
+}
+
+fn dec_from_usize(value: usize) -> Decimal {
+    Decimal::from_usize(value).unwrap_or(Decimal::ONE)
+}
+
+fn dec_to_f64(value: Decimal) -> f64 {
+    value.to_f64().unwrap_or(0.0)
+}
+
+fn dec_epsilon() -> Decimal {
+    Decimal::new(1, 18)
+}
+
+fn profit_to_bps(profit: Decimal) -> f64 {
+    dec_to_f64(profit * dec_from_i64(10_000))
 }
 
 fn evaluate_execution_filters(
@@ -385,6 +416,19 @@ fn evaluate_execution_filters(
         fee_bps_for_pair(rules, &triangle_config.pairs[2]),
     ];
     let assumed_start_amount = assumed_start_amount_for_asset(rules, &triangle_config.parts[0]);
+    let assumed_start_amount_dec = {
+        let value = dec_from_f64(assumed_start_amount);
+        if value > Decimal::ZERO {
+            value
+        } else {
+            dec_epsilon()
+        }
+    };
+    let fee_bps_by_leg_dec = [
+        dec_from_f64(fee_bps_by_leg[0]),
+        dec_from_f64(fee_bps_by_leg[1]),
+        dec_from_f64(fee_bps_by_leg[2]),
+    ];
 
     if !rules.enabled {
         let raw_profit = simulate_triangle_path_amount(
@@ -393,14 +437,16 @@ fn evaluate_execution_filters(
             mid_pair_data,
             end_pair_data,
             level_index,
-            assumed_start_amount,
-            &fee_bps_by_leg,
+            assumed_start_amount_dec,
+            &fee_bps_by_leg_dec,
             false,
             rules,
         );
-        let executable_profit_bps = raw_profit.map_or(0.0, |final_amount| {
-            ((final_amount / assumed_start_amount.max(f64::MIN_POSITIVE)) - 1.0) * 10_000.0
-        });
+        let executable_profit_bps = raw_profit
+            .map(|final_amount| {
+                profit_to_bps((final_amount / assumed_start_amount_dec) - Decimal::ONE)
+            })
+            .unwrap_or(0.0);
         return ExecutionFilterOutcome {
             assumed_start_amount,
             executable_profit_bps,
@@ -419,8 +465,8 @@ fn evaluate_execution_filters(
         mid_pair_data,
         end_pair_data,
         level_index,
-        assumed_start_amount,
-        &fee_bps_by_leg,
+        assumed_start_amount_dec,
+        &fee_bps_by_leg_dec,
         true,
         rules,
     );
@@ -428,7 +474,7 @@ fn evaluate_execution_filters(
     let (execution_filter_passed, executable_profit_bps) = match simulated {
         Ok(final_amount) => (
             true,
-            ((final_amount / assumed_start_amount.max(f64::MIN_POSITIVE)) - 1.0) * 10_000.0,
+            profit_to_bps((final_amount / assumed_start_amount_dec) - Decimal::ONE),
         ),
         Err(reason) => {
             rejection_reasons.push(reason);
@@ -457,11 +503,11 @@ fn simulate_triangle_path_amount(
     mid_pair_data: &DepthStreamWrapper,
     end_pair_data: &DepthStreamWrapper,
     level_index: usize,
-    initial_amount: f64,
-    fee_bps_by_leg: &[f64; 3],
+    initial_amount: Decimal,
+    fee_bps_by_leg: &[Decimal; 3],
     enforce_rules: bool,
     rules: &ExchangeRulesConfig,
-) -> Result<f64, String> {
+) -> Result<Decimal, String> {
     let leg1 = simulate_leg(
         initial_amount,
         &triangle_config.pairs[0],
@@ -496,21 +542,21 @@ fn simulate_triangle_path_amount(
 
 #[allow(clippy::too_many_arguments)]
 fn simulate_leg(
-    trade_amount: f64,
+    trade_amount: Decimal,
     pair_name: &str,
     triangle_part: &str,
     ask: &models::OfferData,
     bid: &models::OfferData,
-    fee_bps: f64,
+    fee_bps: Decimal,
     enforce_rules: bool,
     rules: &ExchangeRulesConfig,
-) -> Result<f64, String> {
-    if trade_amount <= 0.0 || !trade_amount.is_finite() {
+) -> Result<Decimal, String> {
+    if trade_amount <= Decimal::ZERO {
         return Err(format!("invalid input amount for {pair_name}"));
     }
 
     let pair_rule = pair_rule_for_pair(rules, pair_name);
-    let fee_multiplier = 1.0 - fee_bps.max(0.0) / 10_000.0;
+    let fee_multiplier = Decimal::ONE - (fee_bps.max(Decimal::ZERO) / dec_from_i64(10_000));
     let side = trade_side(pair_name, triangle_part);
 
     match side {
@@ -533,7 +579,7 @@ fn simulate_leg(
             }
 
             let mut base_qty = quote_amount / ask.price;
-            if !base_qty.is_finite() || base_qty <= 0.0 {
+            if base_qty <= Decimal::ZERO {
                 return Err(format!("invalid ask price on {pair_name}"));
             }
 
@@ -591,33 +637,34 @@ fn assumed_start_amount_for_asset(rules: &ExchangeRulesConfig, asset: &str) -> f
         .max(f64::MIN_POSITIVE)
 }
 
-fn apply_qty_rounding(quantity: f64, pair_rule: Option<&PairRuleConfig>) -> f64 {
+fn apply_qty_rounding(quantity: Decimal, pair_rule: Option<&PairRuleConfig>) -> Decimal {
     let Some(step) = pair_rule.and_then(|rule| rule.qty_step) else {
         return quantity;
     };
     if step <= 0.0 {
         return quantity;
     }
-    floor_to_step(quantity, step)
+    floor_to_step(quantity, dec_from_f64(step))
 }
 
-fn floor_to_step(value: f64, step: f64) -> f64 {
-    if !value.is_finite() || !step.is_finite() || step <= 0.0 {
+fn floor_to_step(value: Decimal, step: Decimal) -> Decimal {
+    if step <= Decimal::ZERO {
         return value;
     }
-    (value / step).floor() * step
+    ((value / step).floor()) * step
 }
 
 fn validate_base_qty_rules(
     pair_name: &str,
-    base_qty: f64,
+    base_qty: Decimal,
     pair_rule: Option<&PairRuleConfig>,
 ) -> Result<(), String> {
-    if base_qty <= 0.0 || !base_qty.is_finite() {
+    if base_qty <= Decimal::ZERO {
         return Err(format!("non-positive rounded quantity on {pair_name}"));
     }
     if let Some(min_qty) = pair_rule.and_then(|rule| rule.min_qty) {
-        if base_qty < min_qty {
+        let min_qty_dec = dec_from_f64(min_qty);
+        if base_qty < min_qty_dec {
             return Err(format!(
                 "quantity below min_qty on {pair_name} ({base_qty} < {min_qty})"
             ));
@@ -628,11 +675,12 @@ fn validate_base_qty_rules(
 
 fn validate_min_notional(
     pair_name: &str,
-    notional: f64,
+    notional: Decimal,
     pair_rule: Option<&PairRuleConfig>,
 ) -> Result<(), String> {
     if let Some(min_notional) = pair_rule.and_then(|rule| rule.min_notional) {
-        if notional < min_notional {
+        let min_notional_dec = dec_from_f64(min_notional);
+        if notional < min_notional_dec {
             return Err(format!(
                 "notional below min_notional on {pair_name} ({notional} < {min_notional})"
             ));
@@ -669,9 +717,9 @@ fn calculate_triangle_profits(
     }
 
     let mut profits = Vec::with_capacity(depth);
-    let fee1 = fee_bps_for_pair(exchange_rules, start_pair);
-    let fee2 = fee_bps_for_pair(exchange_rules, mid_pair);
-    let fee3 = fee_bps_for_pair(exchange_rules, end_pair);
+    let fee1 = dec_from_f64(fee_bps_for_pair(exchange_rules, start_pair));
+    let fee2 = dec_from_f64(fee_bps_for_pair(exchange_rules, mid_pair));
+    let fee3 = dec_from_f64(fee_bps_for_pair(exchange_rules, end_pair));
 
     for i in 0..depth {
         let ask1 = start_pair_data.data.asks[i].price;
@@ -681,35 +729,35 @@ fn calculate_triangle_profits(
         let ask3 = end_pair_data.data.asks[i].price;
         let bid3 = end_pair_data.data.bids[i].price;
 
-        if ask1 <= 0.0 || ask2 <= 0.0 || ask3 <= 0.0 {
+        if ask1 <= Decimal::ZERO || ask2 <= Decimal::ZERO || ask3 <= Decimal::ZERO {
             continue;
         }
 
-        let mut amount = calc_triangle_step(1.0, ask1, bid1, start_pair, triangle[0], fee1);
+        let mut amount =
+            calc_triangle_step(Decimal::ONE, ask1, bid1, start_pair, triangle[0], fee1);
         amount = calc_triangle_step(amount, ask2, bid2, mid_pair, triangle[1], fee2);
         amount = calc_triangle_step(amount, ask3, bid3, end_pair, triangle[2], fee3);
 
-        let profit = amount - 1.0;
-        if profit.is_finite() {
-            profits.push(ProfitPoint {
-                level_index: i,
-                profit,
-            });
-        }
+        let profit = amount - Decimal::ONE;
+        profits.push(ProfitPoint {
+            level_index: i,
+            profit,
+        });
     }
 
     profits
 }
 
 fn calc_triangle_step(
-    trade_amount: f64,
-    ask_price: f64,
-    bid_price: f64,
+    trade_amount: Decimal,
+    ask_price: Decimal,
+    bid_price: Decimal,
     pair_name: &str,
     triangle_part: &str,
-    fee_bps: f64,
-) -> f64 {
-    let trade_amount = trade_amount * (1.0 - fee_bps.max(0.0) / 10_000.0);
+    fee_bps: Decimal,
+) -> Decimal {
+    let trade_amount =
+        trade_amount * (Decimal::ONE - (fee_bps.max(Decimal::ZERO) / dec_from_i64(10_000)));
 
     if pair_name.starts_with(triangle_part) {
         trade_amount * bid_price
@@ -720,17 +768,32 @@ fn calc_triangle_step(
 
 #[cfg(test)]
 mod tests {
-    use super::calc_triangle_step;
+    use super::{calc_triangle_step, dec_from_f64, dec_from_i64};
+    use rust_decimal::Decimal;
 
     #[test]
     fn sell_side_uses_bid() {
-        let amount = calc_triangle_step(2.0, 10.0, 9.0, "bnbbtc", "bnb", 0.0);
-        assert!(amount > 17.9 && amount < 18.1);
+        let amount = calc_triangle_step(
+            dec_from_i64(2),
+            dec_from_i64(10),
+            dec_from_i64(9),
+            "bnbbtc",
+            "bnb",
+            Decimal::ZERO,
+        );
+        assert_eq!(amount, dec_from_i64(18));
     }
 
     #[test]
     fn buy_side_uses_ask() {
-        let amount = calc_triangle_step(1.0, 2.0, 1.9, "ethbtc", "btc", 0.0);
-        assert!(amount > 0.49 && amount < 0.51);
+        let amount = calc_triangle_step(
+            Decimal::ONE,
+            dec_from_i64(2),
+            dec_from_f64(1.9),
+            "ethbtc",
+            "btc",
+            Decimal::ZERO,
+        );
+        assert_eq!(amount, dec_from_f64(0.5));
     }
 }

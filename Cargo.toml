@@ -14,5 +14,6 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = { version = "1", features = ["serde"] }
 log = "0.4"
 log4rs = { version = "1", features = ["background_rotation"] }

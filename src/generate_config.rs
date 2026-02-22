@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     fs::File,
-    io::BufWriter,
+    io::{self, BufWriter, Write},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -13,6 +13,7 @@ const DEFAULT_OUTPUT_PATH: &str = "generated_triangles.yaml";
 struct GenerateConfigArgs {
     output_path: String,
     include_pair_rules: bool,
+    write_stdout: bool,
 }
 
 impl Default for GenerateConfigArgs {
@@ -20,6 +21,7 @@ impl Default for GenerateConfigArgs {
         Self {
             output_path: DEFAULT_OUTPUT_PATH.to_string(),
             include_pair_rules: true,
+            write_stdout: false,
         }
     }
 }
@@ -54,7 +56,9 @@ where
         Ok(cfg) => cfg,
         Err(msg) => {
             eprintln!("generate-config: {}", msg);
-            eprintln!("usage: cargo run -- generate-config [output.yaml] [--no-pair-rules]");
+            eprintln!(
+                "usage: cargo run -- generate-config [output.yaml] [--no-pair-rules] [--stdout|--print-only]"
+            );
             return true;
         }
     };
@@ -76,6 +80,7 @@ where
     for arg in args {
         match arg.as_str() {
             "--no-pair-rules" => cfg.include_pair_rules = false,
+            "--stdout" | "--print-only" => cfg.write_stdout = true,
             _ if arg.starts_with("--") => return Err(format!("unknown option {arg}")),
             _ => {
                 if path_set {
@@ -115,11 +120,18 @@ async fn run(cli_args: GenerateConfigArgs) -> Result<(), Box<dyn std::error::Err
         pair_rules: cli_args.include_pair_rules.then_some(generated.pair_rules),
     };
 
-    let file = File::create(&cli_args.output_path)?;
-    let writer = BufWriter::new(file);
-    serde_yaml::to_writer(writer, &output)?;
+    if cli_args.write_stdout {
+        let stdout = io::stdout();
+        let mut lock = stdout.lock();
+        serde_yaml::to_writer(&mut lock, &output)?;
+        writeln!(&mut lock)?;
+    } else {
+        let file = File::create(&cli_args.output_path)?;
+        let writer = BufWriter::new(file);
+        serde_yaml::to_writer(writer, &output)?;
+        println!("Generated config written to {}", cli_args.output_path);
+    }
 
-    println!("Generated config written to {}", cli_args.output_path);
     println!("triangles: {}", output.triangle_count);
     println!("depth_streams: {}", output.depth_stream_count);
     println!(
@@ -146,14 +158,22 @@ mod tests {
         let args = parse_args(std::iter::empty::<String>()).expect("parse");
         assert_eq!(args.output_path, "generated_triangles.yaml");
         assert!(args.include_pair_rules);
+        assert!(!args.write_stdout);
     }
 
     #[test]
     fn parse_custom() {
-        let args =
-            parse_args(vec!["out.yaml".to_string(), "--no-pair-rules".to_string()].into_iter())
-                .expect("parse");
+        let args = parse_args(
+            vec![
+                "out.yaml".to_string(),
+                "--no-pair-rules".to_string(),
+                "--stdout".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse");
         assert_eq!(args.output_path, "out.yaml");
         assert!(!args.include_pair_rules);
+        assert!(args.write_stdout);
     }
 }

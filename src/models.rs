@@ -1,13 +1,14 @@
+use rust_decimal::Decimal;
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct OfferData {
-    #[serde(deserialize_with = "de_float_from_str")]
-    pub price: f64,
-    #[serde(deserialize_with = "de_float_from_str")]
-    pub size: f64,
+    #[serde(deserialize_with = "de_decimal_from_str")]
+    pub price: Decimal,
+    #[serde(deserialize_with = "de_decimal_from_str")]
+    pub size: Decimal,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -18,12 +19,12 @@ pub struct DepthStreamData {
     pub asks: Vec<OfferData>,
 }
 
-pub fn de_float_from_str<'de, D>(deserializer: D) -> Result<f64, D::Error>
+pub fn de_decimal_from_str<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
 where
     D: Deserializer<'de>,
 {
     let str_val = Cow::<str>::deserialize(deserializer)?;
-    str_val.parse::<f64>().map_err(de::Error::custom)
+    str_val.parse::<Decimal>().map_err(de::Error::custom)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

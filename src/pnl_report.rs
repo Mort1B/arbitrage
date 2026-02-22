@@ -2,7 +2,7 @@ use crate::models::TriangleOpportunitySignal;
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
 };
 
 const DEFAULT_SIGNAL_LOG_PATH: &str = "data/triangle_signals.jsonl";
@@ -15,6 +15,7 @@ struct PnlReportConfig {
     min_adjusted_bps: f64,
     require_worthy: bool,
     require_execution_passed: bool,
+    csv_output_path: Option<String>,
 }
 
 impl Default for PnlReportConfig {
@@ -25,6 +26,7 @@ impl Default for PnlReportConfig {
             min_adjusted_bps: 0.0,
             require_worthy: true,
             require_execution_passed: true,
+            csv_output_path: None,
         }
     }
 }
@@ -58,7 +60,7 @@ where
         Ok(cfg) => cfg,
         Err(msg) => {
             eprintln!("pnl-report: {}", msg);
-            eprintln!("usage: cargo run -- pnl-report [path] [--top N] [--min-adjusted-bps X] [--include-unworthy] [--include-nonexecutable]");
+            eprintln!("usage: cargo run -- pnl-report [path] [--top N] [--min-adjusted-bps X] [--include-unworthy] [--include-nonexecutable] [--csv path.csv]");
             return true;
         }
     };
@@ -98,6 +100,12 @@ where
             }
             "--include-unworthy" => cfg.require_worthy = false,
             "--include-nonexecutable" => cfg.require_execution_passed = false,
+            "--csv" => {
+                let Some(v) = iter.next() else {
+                    return Err("missing value for --csv".to_string());
+                };
+                cfg.csv_output_path = Some(v);
+            }
             _ if arg.starts_with("--") => return Err(format!("unknown option {arg}")),
             _ => {
                 if path_set {
@@ -191,7 +199,7 @@ fn run(cfg: PnlReportConfig) -> Result<(), Box<dyn std::error::Error>> {
         "triangle", "asset", "samples", "pos", "sum_adj_pnl", "sum_raw_pnl", "avg_bps", "max_bps"
     );
 
-    for (triangle, stats) in rows.into_iter().take(cfg.top_n) {
+    for (triangle, stats) in rows.iter().take(cfg.top_n) {
         let avg_bps = if stats.samples == 0 {
             0.0
         } else {
@@ -199,7 +207,7 @@ fn run(cfg: PnlReportConfig) -> Result<(), Box<dyn std::error::Error>> {
         };
         println!(
             "{:<46} {:<6} {:>7} {:>7} {:>12.6} {:>12.6} {:>10.2} {:>10.2}",
-            truncate(&triangle, 46),
+            truncate(triangle, 46),
             stats.start_asset,
             stats.samples,
             stats.positive_adjusted_samples,
@@ -210,7 +218,53 @@ fn run(cfg: PnlReportConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    if let Some(csv_path) = &cfg.csv_output_path {
+        write_csv(csv_path, &rows, cfg.top_n)?;
+        println!();
+        println!("csv written: {}", csv_path);
+    }
+
     Ok(())
+}
+
+fn write_csv(
+    path: &str,
+    rows: &[(String, TrianglePnlStats)],
+    top_n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = File::create(path)?;
+    writeln!(
+        file,
+        "triangle,asset,samples,positive_samples,sum_adjusted_pnl,sum_raw_pnl,avg_adjusted_bps,max_adjusted_bps,last_timestamp_ms"
+    )?;
+
+    for (triangle, stats) in rows.iter().take(top_n) {
+        let avg_bps = if stats.samples == 0 {
+            0.0
+        } else {
+            stats.sum_adjusted_bps / stats.samples as f64
+        };
+
+        writeln!(
+            file,
+            "\"{}\",{},{},{},{:.8},{:.8},{:.8},{:.8},{}",
+            csv_escape(triangle),
+            stats.start_asset,
+            stats.samples,
+            stats.positive_adjusted_samples,
+            stats.sum_adjusted_pnl,
+            stats.sum_raw_pnl,
+            avg_bps,
+            stats.max_adjusted_bps,
+            stats.last_timestamp_ms
+        )?;
+    }
+
+    Ok(())
+}
+
+fn csv_escape(input: &str) -> String {
+    input.replace('\"', "\"\"")
 }
 
 fn truncate(input: &str, max_len: usize) -> String {
@@ -234,6 +288,7 @@ mod tests {
         assert_eq!(cfg.top_n, 20);
         assert!(cfg.require_worthy);
         assert!(cfg.require_execution_passed);
+        assert!(cfg.csv_output_path.is_none());
     }
 
     #[test]
@@ -247,6 +302,8 @@ mod tests {
                 "3.5".to_string(),
                 "--include-unworthy".to_string(),
                 "--include-nonexecutable".to_string(),
+                "--csv".to_string(),
+                "out.csv".to_string(),
             ]
             .into_iter(),
         )
@@ -257,5 +314,6 @@ mod tests {
         assert_eq!(cfg.min_adjusted_bps, 3.5);
         assert!(!cfg.require_worthy);
         assert!(!cfg.require_execution_passed);
+        assert_eq!(cfg.csv_output_path.as_deref(), Some("out.csv"));
     }
 }
