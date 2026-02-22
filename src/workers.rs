@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 use crate::{
     config::AppConfig,
     models::{self, DepthStreamWrapper},
@@ -224,3 +225,81 @@ fn calc_triangle_step(
 // On line 178 “bnb” is the first part of the pair, so we are on the sell side of the trade. Using BNB to sell for BTC.
 // The amount of BTC we get for 122.84 BNB: 122.84 * 0.008184 =~1.0053.
 // The example trades would yield 0.0053 BTC profit. That is about 0.5% profit. Not bad
+=======
+use crate::{models, Clients};
+use log::{debug, error, info, warn};
+use std::net::TcpStream;
+use tungstenite::{stream::MaybeTlsStream, WebSocket};
+use warp::ws::Message;
+
+type BinanceSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+pub async fn main_worker(clients: Clients, mut socket: BinanceSocket) {
+    loop {
+        let msg = match socket.read_message() {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("error reading Binance message: {}", e);
+                break;
+            }
+        };
+
+        let msg = match msg {
+            tungstenite::Message::Text(s) => s,
+            tungstenite::Message::Close(frame) => {
+                info!("Binance websocket closed: {:?}", frame);
+                break;
+            }
+            tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+            _ => {
+                debug!("skipping non-text Binance frame");
+                continue;
+            }
+        };
+
+        let parsed: models::DepthStreamWrapper = match serde_json::from_str(&msg) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                warn!("failed to parse Binance depth payload: {}", e);
+                continue;
+            }
+        };
+
+        debug!(
+            "received {} with {} bids and {} asks",
+            parsed.stream,
+            parsed.data.bids.len(),
+            parsed.data.asks.len()
+        );
+
+        let payload = match serde_json::to_string(&parsed) {
+            Ok(payload) => payload,
+            Err(e) => {
+                warn!("failed to serialize payload for clients: {}", e);
+                continue;
+            }
+        };
+
+        let senders = {
+            let locked = clients.lock().await;
+            if locked.is_empty() {
+                Vec::new()
+            } else {
+                locked
+                    .values()
+                    .map(|client| client.sender.clone())
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        if senders.is_empty() {
+            continue;
+        }
+
+        debug!("broadcasting payload to {} client(s)", senders.len());
+        for sender in senders {
+            let _ = sender.send(Ok(Message::text(payload.clone())));
+        }
+    }
+}
+>>>>>>> 8a83541 (test2)

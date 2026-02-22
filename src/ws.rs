@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 use crate::{Client, Clients};
 use futures::{FutureExt, StreamExt};
 use log::{error, info};
@@ -75,3 +76,64 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients) {
         }
     };
 }
+=======
+use crate::{Client, Clients};
+use futures::{FutureExt, StreamExt};
+use log::{debug, error, info};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use uuid::Uuid;
+use warp::ws::{Message, WebSocket};
+
+pub async fn client_connection(ws: WebSocket, clients: Clients) {
+    info!("establishing websocket client connection");
+    let (client_ws_sender, mut client_ws_rcv) = ws.split();
+    let (client_sender, client_rcv) = mpsc::unbounded_channel();
+    let client_rcv = UnboundedReceiverStream::new(client_rcv);
+    tokio::task::spawn(client_rcv.forward(client_ws_sender).map(|result| {
+        if let Err(e) = result {
+            error!("error sending websocket message: {}", e);
+        }
+    }));
+    let uuid = Uuid::new_v4().simple().to_string();
+    let new_client = Client {
+        client_id: uuid.clone(),
+        sender: client_sender,
+    };
+    clients.lock().await.insert(uuid.clone(), new_client);
+    while let Some(result) = client_ws_rcv.next().await {
+        let msg = match result {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("error receiving message for id {}: {}", uuid, e);
+                break;
+            }
+        };
+        client_msg(&uuid, msg, &clients).await;
+    }
+    clients.lock().await.remove(&uuid);
+    info!("{} disconnected", uuid);
+}
+
+async fn client_msg(client_id: &str, msg: Message, clients: &Clients) {
+    debug!("received message from {}: {:?}", client_id, msg);
+    let message = match msg.to_str() {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    if message.trim() != "ping" {
+        return;
+    }
+
+    let sender = {
+        let locked = clients.lock().await;
+        locked.get(client_id).map(|client| client.sender.clone())
+    };
+
+    if let Some(sender) = sender {
+        debug!("sending pong to {}", client_id);
+        let _ = sender.send(Ok(Message::text("pong")));
+    }
+}
+>>>>>>> 8a83541 (test2)
