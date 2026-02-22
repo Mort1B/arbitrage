@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn default_bind_addr() -> String {
@@ -73,7 +73,7 @@ const fn default_auto_triangle_generation_merge_pair_rules() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct PairRuleConfig {
     pub min_notional: Option<f64>,
     pub min_qty: Option<f64>,
@@ -132,7 +132,7 @@ impl Default for AutoTriangleGenerationConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TriangleConfig {
     pub parts: [String; 3],
     pub pairs: [String; 3],

@@ -7,8 +7,10 @@ use warp::{ws::Message, Filter, Rejection};
 mod analyzer;
 mod auto_triangles;
 mod config;
+mod generate_config;
 mod handlers;
 mod models;
+mod pnl_report;
 mod signal_log;
 mod simulator;
 mod workers;
@@ -47,6 +49,12 @@ async fn main() {
         return;
     }
     if simulator::run_from_cli_args(std::env::args().skip(1)) {
+        return;
+    }
+    if pnl_report::run_from_cli_args(std::env::args().skip(1)) {
+        return;
+    }
+    if generate_config::run_from_cli_args(std::env::args().skip(1)).await {
         return;
     }
 

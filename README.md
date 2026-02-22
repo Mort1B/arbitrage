@@ -71,6 +71,25 @@ Notes:
 - `include_reverse_cycles` evaluates both directions of a cycle
 - `include_all_starts` expands each cycle into all 3 starting assets (higher CPU load)
 
+### Generate Config Preview File
+
+To inspect the auto-generated universe before running live:
+
+```bash
+cargo run -- generate-config generated_triangles.yaml
+```
+
+Options:
+
+- `--no-pair-rules` to omit extracted Binance filter rules from the output file
+
+The generated file contains:
+
+- `depth_streams`
+- `triangles`
+- optional `pair_rules`
+- summary metadata (counts, timestamp)
+
 ## Analyze Recorded Signals
 
 Analyze the default signal file:
@@ -91,6 +110,28 @@ The analyzer prints per-triangle summary stats such as:
 - worthy count
 - average / max best profit (bps)
 - average hit rate
+
+## Positive PnL Report (Offline)
+
+Find triangles with positive estimated PnL from recorded signals:
+
+```bash
+cargo run -- pnl-report
+```
+
+Examples:
+
+```bash
+cargo run -- pnl-report data/triangle_signals.jsonl --top 25 --min-adjusted-bps 3.0
+cargo run -- pnl-report --include-unworthy --include-nonexecutable
+```
+
+This report aggregates by triangle and shows:
+
+- sample count
+- positive adjusted-PnL sample count
+- summed estimated raw/adjusted PnL (in the triangle start asset)
+- average and max adjusted bps
 
 ## Paper Trade Simulation
 
@@ -202,6 +243,8 @@ Clients can also send `ping` and receive `pong`.
 - `src/signal_log.rs` - async JSONL writer task
 - `src/analyzer.rs` - offline analyzer CLI
 - `src/auto_triangles.rs` - asset-universe graph builder + triangle enumeration
+- `src/generate_config.rs` - writes auto-generated triangles/depth streams to YAML
+- `src/pnl_report.rs` - positive-PnL opportunity report from signal logs
 - `src/config.rs` - config structs + defaults
 
 ## Notes / Limitations
