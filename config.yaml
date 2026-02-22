@@ -6,6 +6,14 @@ signal_log_path: data/triangle_signals.jsonl
 signal_log_channel_capacity: 2048
 signal_min_profit_bps: 8.0
 signal_min_hit_rate: 0.20
+# Market-data freshness + local-book sync health gates (0 disables a gate)
+max_book_age_ms: 1500
+snapshot_resync_min_interval_ms: 250
+snapshot_resync_backoff_initial_ms: 500
+snapshot_resync_backoff_max_ms: 5000
+sync_health_gap_window_ms: 10000
+sync_health_max_gaps_in_window_per_leg: 3
+sync_health_max_recent_resync_failure_age_ms: 3000
 exchange_rules:
   enabled: true
   latency_penalty_bps: 2.0

@@ -1427,12 +1427,16 @@ fn calc_triangle_step(
 #[cfg(test)]
 mod tests {
     use super::{
-        age_since_timestamp_ms, build_triangle_sync_health, calc_triangle_step,
-        count_recent_timestamps, dec_from_f64, dec_from_i64, record_gap_event,
+        age_since_timestamp_ms, apply_buffered_diffs_after_snapshot, build_triangle_sync_health,
+        calc_triangle_step, count_recent_timestamps, dec_from_f64, dec_from_i64, record_gap_event,
         resync_wait_remaining_ms, schedule_failure_backoff, schedule_min_resync_interval,
-        PairSyncStats,
+        BufferedDiffUpdate, PairSyncStats,
     };
-    use crate::{config::TriangleConfig, market_state::MarketState, orderbook::PriceLevel};
+    use crate::{
+        config::TriangleConfig,
+        market_state::MarketState,
+        orderbook::{OrderBookDiff, PriceLevel},
+    };
     use rust_decimal::Decimal;
     use std::collections::{HashMap, VecDeque};
 
@@ -1451,6 +1455,35 @@ mod tests {
             }],
             1_000,
         );
+    }
+
+    fn level(price: i64, qty: i64) -> PriceLevel {
+        PriceLevel {
+            price: dec_from_i64(price),
+            qty: dec_from_i64(qty),
+        }
+    }
+
+    fn buffered_diff(
+        stream_name: &str,
+        first_update_id: u64,
+        final_update_id: u64,
+        prev_final_update_id: Option<u64>,
+        bids: Vec<PriceLevel>,
+        asks: Vec<PriceLevel>,
+    ) -> BufferedDiffUpdate {
+        BufferedDiffUpdate {
+            stream_name: stream_name.to_string(),
+            diff: OrderBookDiff {
+                first_update_id,
+                final_update_id,
+                prev_final_update_id,
+                bids,
+                asks,
+                event_time_ms: None,
+                receive_time_ms: None,
+            },
+        }
     }
 
     #[test]
@@ -1579,5 +1612,60 @@ mod tests {
     fn age_since_zero_timestamp_is_zero() {
         assert_eq!(age_since_timestamp_ms(1_000, 0), 0);
         assert_eq!(age_since_timestamp_ms(1_000, 900), 100);
+    }
+
+    #[test]
+    fn replay_buffered_diffs_after_snapshot_applies_bridge_and_followups() {
+        let mut market_state = MarketState::with_capacity(1);
+        market_state.apply_orderbook_snapshot(
+            "btcusdt",
+            "btcusdt@depth@100ms".to_string(),
+            100,
+            vec![level(100, 1), level(99, 1)],
+            vec![level(101, 1), level(102, 1)],
+            1_000,
+        );
+
+        let mut buffer = vec![
+            buffered_diff(
+                "btcusdt@depth@100ms",
+                98,
+                100,
+                Some(97),
+                vec![level(100, 9)],
+                vec![],
+            ),
+            buffered_diff(
+                "btcusdt@depth@100ms",
+                101,
+                102,
+                Some(100),
+                vec![level(100, 2)],
+                vec![level(101, 0), level(103, 5)],
+            ),
+            buffered_diff(
+                "btcusdt@depth@100ms",
+                103,
+                103,
+                Some(102),
+                vec![level(98, 7)],
+                vec![],
+            ),
+        ];
+
+        let replayed =
+            apply_buffered_diffs_after_snapshot(&mut market_state, "btcusdt", &mut buffer).unwrap();
+        assert!(replayed);
+        assert!(buffer.is_empty());
+
+        let view = market_state
+            .export_depth_view("btcusdt", 5)
+            .expect("synced view");
+        assert_eq!(view.depth.data.last_update_id, 103);
+        assert_eq!(view.depth.data.bids[0].price, dec_from_i64(100));
+        assert_eq!(view.depth.data.bids[0].size, dec_from_i64(2));
+        assert_eq!(view.depth.data.bids[2].price, dec_from_i64(98));
+        assert_eq!(view.depth.data.asks[0].price, dec_from_i64(102));
+        assert_eq!(view.depth.data.asks[1].price, dec_from_i64(103));
     }
 }
