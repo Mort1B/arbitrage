@@ -43,6 +43,16 @@ struct TriangleOutputs {
     signal_line: String,
 }
 
+#[derive(Clone, Copy, Default)]
+struct PairSyncStats {
+    gap_count: u64,
+    resync_attempt_count: u64,
+    resync_success_count: u64,
+    resync_failure_count: u64,
+    last_resync_timestamp_ms: u64,
+    last_resync_failure_timestamp_ms: u64,
+}
+
 #[derive(Clone)]
 struct BufferedDiffUpdate {
     stream_name: String,
@@ -58,6 +68,17 @@ struct TriangleBookTiming {
     max_book_age_ms: u64,
     max_book_age_threshold_ms: u64,
     book_freshness_passed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TriangleSyncHealth {
+    pair_synced_by_leg: [bool; 3],
+    pair_resync_attempt_count_by_leg: [u64; 3],
+    pair_resync_count_by_leg: [u64; 3],
+    pair_resync_failure_count_by_leg: [u64; 3],
+    pair_gap_count_by_leg: [u64; 3],
+    pair_last_resync_timestamp_ms_by_leg: [u64; 3],
+    pair_last_resync_failure_timestamp_ms_by_leg: [u64; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +106,8 @@ pub async fn main_worker(
     let mut market_state = MarketState::with_capacity(config.depth_streams.len());
     let rest_client = reqwest::Client::new();
     let mut pending_diffs: HashMap<String, Vec<BufferedDiffUpdate>> =
+        HashMap::with_capacity(config.depth_streams.len());
+    let mut pair_sync_stats: HashMap<String, PairSyncStats> =
         HashMap::with_capacity(config.depth_streams.len());
     let snapshot_limit = config.results_limit.clamp(1, 5_000) as u16;
     let publish_every = Duration::from_millis(u64::from(config.update_interval.max(1)));
@@ -136,6 +159,10 @@ pub async fn main_worker(
                                 "order book diff apply failed for {}: {:?}; resyncing",
                                 pair_key, err
                             );
+                            pair_sync_stats
+                                .entry(pair_key.clone())
+                                .or_default()
+                                .gap_count += 1;
                             market_state.mark_pair_unsynced(&pair_key);
                             let buf = pending_diffs.entry(pair_key.clone()).or_default();
                             buf.clear();
@@ -147,6 +174,7 @@ pub async fn main_worker(
                                 &rest_client,
                                 &mut market_state,
                                 &mut pending_diffs,
+                                &mut pair_sync_stats,
                                 &pair_key,
                                 snapshot_limit,
                             )
@@ -167,6 +195,7 @@ pub async fn main_worker(
                         &rest_client,
                         &mut market_state,
                         &mut pending_diffs,
+                        &mut pair_sync_stats,
                         &pair_key,
                         snapshot_limit,
                     )
@@ -196,9 +225,14 @@ pub async fn main_worker(
         }
         last_publish = Instant::now();
 
-        if let Err(e) =
-            publish_triangle_updates(&clients, &config, &market_state, signal_log_sender.as_ref())
-                .await
+        if let Err(e) = publish_triangle_updates(
+            &clients,
+            &config,
+            &market_state,
+            &pair_sync_stats,
+            signal_log_sender.as_ref(),
+        )
+        .await
         {
             warn!("failed to publish triangle updates: {}", e);
         }
@@ -209,6 +243,7 @@ async fn publish_triangle_updates(
     clients: &Clients,
     config: &AppConfig,
     market_state: &MarketState,
+    pair_sync_stats: &HashMap<String, PairSyncStats>,
     signal_log_sender: Option<&SignalLogSender>,
 ) -> Result<(), serde_json::Error> {
     let recipients = {
@@ -244,6 +279,7 @@ async fn publish_triangle_updates(
             [&start_view, &mid_view, &end_view],
             config.max_book_age_ms,
         );
+        let sync_health = build_triangle_sync_health(triangle, market_state, pair_sync_stats);
 
         let Some(outputs) = build_triangle_outputs(
             triangle,
@@ -252,6 +288,7 @@ async fn publish_triangle_updates(
             &end_view.depth,
             config,
             book_timing,
+            sync_health,
         )?
         else {
             continue;
@@ -299,6 +336,7 @@ fn build_triangle_outputs(
     end_pair_data: &DepthStreamWrapper,
     config: &AppConfig,
     book_timing: TriangleBookTiming,
+    sync_health: TriangleSyncHealth,
 ) -> Result<Option<TriangleOutputs>, serde_json::Error> {
     let [start_pair, mid_pair, end_pair] = &triangle_config.pairs;
     let [part_a, part_b, part_c] = &triangle_config.parts;
@@ -392,6 +430,7 @@ fn build_triangle_outputs(
         avg_profit_bps,
         &execution_outcome,
         book_timing,
+        sync_health,
         worthy,
         config.signal_min_profit_bps,
         config.signal_min_hit_rate,
@@ -418,6 +457,7 @@ fn build_opportunity_signal(
     avg_profit_bps: Decimal,
     execution_outcome: &ExecutionFilterOutcome,
     book_timing: TriangleBookTiming,
+    sync_health: TriangleSyncHealth,
     worthy: bool,
     min_profit_bps_threshold: f64,
     min_hit_rate_threshold: f64,
@@ -451,6 +491,14 @@ fn build_opportunity_signal(
         min_book_age_ms: book_timing.min_book_age_ms,
         max_book_age_ms: book_timing.max_book_age_ms,
         book_freshness_passed: book_timing.book_freshness_passed,
+        pair_synced_by_leg: sync_health.pair_synced_by_leg,
+        pair_resync_attempt_count_by_leg: sync_health.pair_resync_attempt_count_by_leg,
+        pair_resync_count_by_leg: sync_health.pair_resync_count_by_leg,
+        pair_resync_failure_count_by_leg: sync_health.pair_resync_failure_count_by_leg,
+        pair_gap_count_by_leg: sync_health.pair_gap_count_by_leg,
+        pair_last_resync_timestamp_ms_by_leg: sync_health.pair_last_resync_timestamp_ms_by_leg,
+        pair_last_resync_failure_timestamp_ms_by_leg: sync_health
+            .pair_last_resync_failure_timestamp_ms_by_leg,
         execution_filter_passed: execution_outcome.execution_filter_passed,
         worthy,
         min_profit_bps_threshold: dec_from_f64(min_profit_bps_threshold),
@@ -530,6 +578,7 @@ async fn sync_pair_from_snapshot(
     rest_client: &reqwest::Client,
     market_state: &mut MarketState,
     pending_diffs: &mut HashMap<String, Vec<BufferedDiffUpdate>>,
+    pair_sync_stats: &mut HashMap<String, PairSyncStats>,
     pair_key: &str,
     snapshot_limit: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -544,6 +593,10 @@ async fn sync_pair_from_snapshot(
         .last()
         .map(|u| u.stream_name.clone())
         .unwrap_or_else(|| format!("{pair_key}@depth@100ms"));
+    pair_sync_stats
+        .entry(pair_key.to_string())
+        .or_default()
+        .resync_attempt_count += 1;
 
     // Retry a few times because the REST snapshot can lag behind the already-buffered diff stream.
     for _ in 0..3 {
@@ -574,19 +627,30 @@ async fn sync_pair_from_snapshot(
         );
 
         match apply_buffered_diffs_after_snapshot(market_state, pair_key, buffer) {
-            Ok(true) => return Ok(()),
+            Ok(true) => {
+                let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
+                stats.resync_success_count += 1;
+                stats.last_resync_timestamp_ms = now_unix_ms();
+                return Ok(());
+            }
             Ok(false) => {
                 // snapshot is older than buffered stream start; fetch a newer one
                 continue;
             }
             Err(err) => {
                 market_state.mark_pair_unsynced(pair_key);
+                let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
+                stats.resync_failure_count += 1;
+                stats.last_resync_failure_timestamp_ms = now_unix_ms();
                 return Err(format!("buffered diff replay failed for {pair_key}: {err:?}").into());
             }
         }
     }
 
     market_state.mark_pair_unsynced(pair_key);
+    let stats = pair_sync_stats.entry(pair_key.to_string()).or_default();
+    stats.resync_failure_count += 1;
+    stats.last_resync_failure_timestamp_ms = now_unix_ms();
     Err(format!("unable to obtain fresh enough snapshot for {pair_key} after retries").into())
 }
 
@@ -674,6 +738,53 @@ fn build_triangle_book_timing(
         max_book_age_ms: max_age,
         max_book_age_threshold_ms,
         book_freshness_passed: freshness_passed,
+    }
+}
+
+fn build_triangle_sync_health(
+    triangle: &TriangleConfig,
+    market_state: &MarketState,
+    pair_sync_stats: &HashMap<String, PairSyncStats>,
+) -> TriangleSyncHealth {
+    let pair0 = &triangle.pairs[0];
+    let pair1 = &triangle.pairs[1];
+    let pair2 = &triangle.pairs[2];
+    let stats0 = pair_sync_stats.get(pair0).copied().unwrap_or_default();
+    let stats1 = pair_sync_stats.get(pair1).copied().unwrap_or_default();
+    let stats2 = pair_sync_stats.get(pair2).copied().unwrap_or_default();
+
+    TriangleSyncHealth {
+        pair_synced_by_leg: [
+            market_state.is_pair_synced(pair0),
+            market_state.is_pair_synced(pair1),
+            market_state.is_pair_synced(pair2),
+        ],
+        pair_resync_attempt_count_by_leg: [
+            stats0.resync_attempt_count,
+            stats1.resync_attempt_count,
+            stats2.resync_attempt_count,
+        ],
+        pair_resync_count_by_leg: [
+            stats0.resync_success_count,
+            stats1.resync_success_count,
+            stats2.resync_success_count,
+        ],
+        pair_resync_failure_count_by_leg: [
+            stats0.resync_failure_count,
+            stats1.resync_failure_count,
+            stats2.resync_failure_count,
+        ],
+        pair_gap_count_by_leg: [stats0.gap_count, stats1.gap_count, stats2.gap_count],
+        pair_last_resync_timestamp_ms_by_leg: [
+            stats0.last_resync_timestamp_ms,
+            stats1.last_resync_timestamp_ms,
+            stats2.last_resync_timestamp_ms,
+        ],
+        pair_last_resync_failure_timestamp_ms_by_leg: [
+            stats0.last_resync_failure_timestamp_ms,
+            stats1.last_resync_failure_timestamp_ms,
+            stats2.last_resync_failure_timestamp_ms,
+        ],
     }
 }
 
