@@ -10,6 +10,7 @@ mod config;
 mod generate_config;
 mod handlers;
 mod models;
+mod orderbook;
 mod pnl_report;
 mod signal_log;
 mod simulator;
