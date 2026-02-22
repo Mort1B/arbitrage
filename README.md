@@ -39,6 +39,38 @@ By default it:
 - writes signals to `data/triangle_signals.jsonl`
 - serves websocket on `ws://127.0.0.1:8000/ws`
 
+## Auto-Generate Triangles From Asset List
+
+You can enable automatic triangle generation from an asset universe using Binance `exchangeInfo`.
+
+When enabled, the program will:
+
+1. Load Binance exchange metadata
+2. Build a tradable asset graph (spot symbols only, `TRADING` status)
+3. Enumerate valid 3-cycles
+4. Generate `triangles`
+5. Generate the minimal `depth_streams` set required
+6. Optionally merge Binance lot-size / min-notional filters into `exchange_rules.pair_rules`
+
+Config example (`config.yaml`):
+
+```yaml
+auto_triangle_generation:
+  enabled: true
+  exchange_info_url: https://api.binance.com/api/v3/exchangeInfo
+  include_reverse_cycles: true
+  include_all_starts: false
+  max_triangles: 0
+  merge_pair_rules_from_exchange_info: true
+  assets: [btc, eth, bnb, usdt, usdc, xrp, sol]
+```
+
+Notes:
+
+- `max_triangles: 0` means no limit
+- `include_reverse_cycles` evaluates both directions of a cycle
+- `include_all_starts` expands each cycle into all 3 starting assets (higher CPU load)
+
 ## Analyze Recorded Signals
 
 Analyze the default signal file:
@@ -120,6 +152,7 @@ Important keys:
 - `results_limit`: Binance depth levels requested
 - `depth_streams`: subscribed Binance depth streams
 - `triangles`: triangle definitions (`parts` + `pairs`)
+- `auto_triangle_generation`: build triangles/depth streams automatically from an asset list
 - `signal_log_enabled`: enable JSONL logging
 - `signal_log_path`: output JSONL path
 - `signal_log_channel_capacity`: buffered log queue size
@@ -168,6 +201,7 @@ Clients can also send `ping` and receive `pong`.
 - `src/models.rs` - Binance depth and signal data models
 - `src/signal_log.rs` - async JSONL writer task
 - `src/analyzer.rs` - offline analyzer CLI
+- `src/auto_triangles.rs` - asset-universe graph builder + triangle enumeration
 - `src/config.rs` - config structs + defaults
 
 ## Notes / Limitations

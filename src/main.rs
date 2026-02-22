@@ -5,6 +5,7 @@ use tokio::time::Duration;
 use warp::{ws::Message, Filter, Rejection};
 
 mod analyzer;
+mod auto_triangles;
 mod config;
 mod handlers;
 mod models;
@@ -51,8 +52,38 @@ async fn main() {
 
     log4rs::init_file("log_config.yaml", Default::default()).expect("failed to initialize logging");
     let config_file = std::fs::File::open("config.yaml").expect("Could not open config.yaml");
-    let app_config: config::AppConfig =
+    let mut app_config: config::AppConfig =
         serde_yaml::from_reader(config_file).expect("Could not parse config.yaml");
+
+    if app_config.auto_triangle_generation.enabled {
+        info!(
+            "Auto triangle generation enabled for {} assets",
+            app_config.auto_triangle_generation.assets.len()
+        );
+        let generated = auto_triangles::generate_from_binance(&app_config.auto_triangle_generation)
+            .await
+            .expect("failed to generate triangles from Binance exchange info");
+
+        info!(
+            "Generated {} triangles using {} depth streams across {} assets",
+            generated.triangles.len(),
+            generated.depth_streams.len(),
+            generated.used_assets.len()
+        );
+
+        app_config.depth_streams = generated.depth_streams;
+        app_config.triangles = generated.triangles;
+
+        if app_config
+            .auto_triangle_generation
+            .merge_pair_rules_from_exchange_info
+        {
+            merge_generated_pair_rules(
+                &mut app_config.exchange_rules.pair_rules,
+                generated.pair_rules,
+            );
+        }
+    }
     let server_addr: SocketAddr = format!("{}:{}", app_config.bind_addr, app_config.bind_port)
         .parse()
         .expect("invalid bind_addr/bind_port in config.yaml");
@@ -120,6 +151,31 @@ async fn main() {
 
     info!("Starting websocket server on {}", server_addr);
     warp::serve(routes).run(server_addr).await;
+}
+
+fn merge_generated_pair_rules(
+    existing: &mut HashMap<String, config::PairRuleConfig>,
+    generated: HashMap<String, config::PairRuleConfig>,
+) {
+    for (pair, generated_rule) in generated {
+        existing
+            .entry(pair)
+            .and_modify(|current| {
+                if current.min_notional.is_none() {
+                    current.min_notional = generated_rule.min_notional;
+                }
+                if current.min_qty.is_none() {
+                    current.min_qty = generated_rule.min_qty;
+                }
+                if current.qty_step.is_none() {
+                    current.qty_step = generated_rule.qty_step;
+                }
+                if current.fee_bps.is_none() {
+                    current.fee_bps = generated_rule.fee_bps;
+                }
+            })
+            .or_insert(generated_rule);
+    }
 }
 
 fn with_clients(clients: Clients) -> impl Filter<Extract = (Clients,), Error = Infallible> + Clone {

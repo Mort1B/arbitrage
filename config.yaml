@@ -36,6 +36,14 @@ exchange_rules:
       min_qty: 0.00001
       qty_step: 0.00001
       fee_bps: 7.5
+auto_triangle_generation:
+  enabled: false
+  exchange_info_url: https://api.binance.com/api/v3/exchangeInfo
+  include_reverse_cycles: true
+  include_all_starts: false
+  max_triangles: 0
+  merge_pair_rules_from_exchange_info: true
+  assets: [btc, eth, bnb, usdt, busd, usdc, xrp, sol, ada, doge]
 update_interval: 100
 results_limit: 5
 depth_streams:

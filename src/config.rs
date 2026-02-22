@@ -49,6 +49,30 @@ const fn default_default_assumed_start_amount() -> f64 {
     1.0
 }
 
+const fn default_auto_triangle_generation_enabled() -> bool {
+    false
+}
+
+fn default_auto_triangle_generation_exchange_info_url() -> String {
+    "https://api.binance.com/api/v3/exchangeInfo".to_string()
+}
+
+const fn default_auto_triangle_generation_include_reverse_cycles() -> bool {
+    true
+}
+
+const fn default_auto_triangle_generation_include_all_starts() -> bool {
+    false
+}
+
+const fn default_auto_triangle_generation_max_triangles() -> usize {
+    0
+}
+
+const fn default_auto_triangle_generation_merge_pair_rules() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct PairRuleConfig {
     pub min_notional: Option<f64>,
@@ -77,6 +101,33 @@ impl Default for ExchangeRulesConfig {
             default_assumed_start_amount: default_default_assumed_start_amount(),
             assumed_start_amounts: HashMap::new(),
             pair_rules: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct AutoTriangleGenerationConfig {
+    pub enabled: bool,
+    pub assets: Vec<String>,
+    pub exchange_info_url: String,
+    pub include_reverse_cycles: bool,
+    pub include_all_starts: bool,
+    pub max_triangles: usize,
+    pub merge_pair_rules_from_exchange_info: bool,
+}
+
+impl Default for AutoTriangleGenerationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_auto_triangle_generation_enabled(),
+            assets: Vec::new(),
+            exchange_info_url: default_auto_triangle_generation_exchange_info_url(),
+            include_reverse_cycles: default_auto_triangle_generation_include_reverse_cycles(),
+            include_all_starts: default_auto_triangle_generation_include_all_starts(),
+            max_triangles: default_auto_triangle_generation_max_triangles(),
+            merge_pair_rules_from_exchange_info: default_auto_triangle_generation_merge_pair_rules(
+            ),
         }
     }
 }
@@ -111,4 +162,6 @@ pub struct AppConfig {
     pub signal_min_hit_rate: f64,
     #[serde(default)]
     pub exchange_rules: ExchangeRulesConfig,
+    #[serde(default)]
+    pub auto_triangle_generation: AutoTriangleGenerationConfig,
 }

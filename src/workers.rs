@@ -139,15 +139,15 @@ async fn publish_triangle_updates(
 ) -> Result<(), serde_json::Error> {
     let recipients = {
         let locked = clients.read().await;
-        if locked.is_empty() {
-            return Ok(());
-        }
-
         locked
             .iter()
             .map(|(id, client)| (id.clone(), client.sender.clone()))
             .collect::<Vec<_>>()
     };
+
+    if recipients.is_empty() && signal_log_sender.is_none() {
+        return Ok(());
+    }
 
     let mut stale_client_ids = HashSet::new();
 
