@@ -6,6 +6,36 @@ signal_log_path: data/triangle_signals.jsonl
 signal_log_channel_capacity: 2048
 signal_min_profit_bps: 8.0
 signal_min_hit_rate: 0.20
+exchange_rules:
+  enabled: true
+  latency_penalty_bps: 2.0
+  default_fee_bps: 7.5
+  default_assumed_start_amount: 1.0
+  assumed_start_amounts:
+    usdt: 100.0
+    busd: 100.0
+    usdc: 100.0
+    btc: 0.01
+    eth: 0.2
+    bnb: 1.0
+  pair_rules:
+    ethbtc:
+      min_notional: 0.0001
+      min_qty: 0.0001
+      qty_step: 0.0001
+    bnbeth:
+      min_notional: 0.0001
+      min_qty: 0.001
+      qty_step: 0.001
+    bnbbtc:
+      min_notional: 0.0001
+      min_qty: 0.001
+      qty_step: 0.001
+    btcusdt:
+      min_notional: 10.0
+      min_qty: 0.00001
+      qty_step: 0.00001
+      fee_bps: 7.5
 update_interval: 100
 results_limit: 5
 depth_streams:

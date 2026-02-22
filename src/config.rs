@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 
 fn default_bind_addr() -> String {
     "127.0.0.1".to_string()
@@ -32,6 +33,54 @@ const fn default_signal_min_hit_rate() -> f64 {
     0.2
 }
 
+const fn default_exchange_rules_enabled() -> bool {
+    true
+}
+
+const fn default_latency_penalty_bps() -> f64 {
+    2.0
+}
+
+const fn default_default_fee_bps() -> f64 {
+    7.5
+}
+
+const fn default_default_assumed_start_amount() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PairRuleConfig {
+    pub min_notional: Option<f64>,
+    pub min_qty: Option<f64>,
+    pub qty_step: Option<f64>,
+    pub fee_bps: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ExchangeRulesConfig {
+    pub enabled: bool,
+    pub latency_penalty_bps: f64,
+    pub default_fee_bps: f64,
+    pub default_assumed_start_amount: f64,
+    pub assumed_start_amounts: HashMap<String, f64>,
+    pub pair_rules: HashMap<String, PairRuleConfig>,
+}
+
+impl Default for ExchangeRulesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_exchange_rules_enabled(),
+            latency_penalty_bps: default_latency_penalty_bps(),
+            default_fee_bps: default_default_fee_bps(),
+            default_assumed_start_amount: default_default_assumed_start_amount(),
+            assumed_start_amounts: HashMap::new(),
+            pair_rules: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct TriangleConfig {
     pub parts: [String; 3],
@@ -60,4 +109,6 @@ pub struct AppConfig {
     pub signal_min_profit_bps: f64,
     #[serde(default = "default_signal_min_hit_rate")]
     pub signal_min_hit_rate: f64,
+    #[serde(default)]
+    pub exchange_rules: ExchangeRulesConfig,
 }

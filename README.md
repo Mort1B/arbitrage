@@ -60,6 +60,55 @@ The analyzer prints per-triangle summary stats such as:
 - average / max best profit (bps)
 - average hit rate
 
+## Paper Trade Simulation
+
+Run the offline paper-trade simulator on recorded signals:
+
+```bash
+cargo run -- simulate
+```
+
+Custom file:
+
+```bash
+cargo run -- simulate /path/to/signals.jsonl
+```
+
+Optional tuning:
+
+```bash
+cargo run -- simulate data/triangle_signals.jsonl --cooldown-ms 3000 --min-adjusted-bps 5.0
+```
+
+With virtual balances + position sizing:
+
+```bash
+cargo run -- simulate data/triangle_signals.jsonl \
+  --balance usdt=10000 --balance btc=0.25 \
+  --position-size-pct 0.20 \
+  --max-position-vs-signal 1.0
+```
+
+Flags:
+
+- `--cooldown-ms N`: minimum time between repeated trades on the same triangle
+- `--min-adjusted-bps X`: extra filter on top of the logged signal
+- `--include-unworthy`: simulate all executable signals, not only `worthy=true`
+- `--balance asset=amount`: seed a virtual balance (repeatable)
+- `--position-size-pct P`: fraction of available balance used per simulated trade (`0 < P <= 1`)
+- `--max-position-vs-signal M`: cap position size to `M * assumed_start_amount` from the signal
+- `--no-auto-seed`: disable automatic seeding of unseen assets
+- `--seed-multiplier M`: when auto-seeding, seed unseen assets with `M * assumed_start_amount`
+
+Simulator output includes:
+
+- executed trade count
+- win/loss count
+- average adjusted bps
+- estimated PnL grouped by start asset
+- top triangles by average adjusted bps
+- final virtual balances by asset
+
 ## Configuration (`config.yaml`)
 
 Important keys:
@@ -134,4 +183,3 @@ Clients can also send `ping` and receive `pong`.
 2. Switch profit math to `rust_decimal` (or fixed-point).
 3. Add exchange rule filters (min notional, lot size, fees, latency assumptions).
 4. Add execution adapter interfaces before implementing a real bot.
-

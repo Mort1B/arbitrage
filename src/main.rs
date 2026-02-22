@@ -9,6 +9,7 @@ mod config;
 mod handlers;
 mod models;
 mod signal_log;
+mod simulator;
 mod workers;
 mod ws;
 
@@ -42,6 +43,9 @@ fn get_binance_streams_url(
 #[tokio::main]
 async fn main() {
     if analyzer::run_from_cli_args(std::env::args().skip(1)) {
+        return;
+    }
+    if simulator::run_from_cli_args(std::env::args().skip(1)) {
         return;
     }
 
