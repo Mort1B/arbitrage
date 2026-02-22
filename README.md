@@ -285,3 +285,158 @@ Clients can also send `ping` and receive `pong`.
 2. Add a live paper-trading runtime that consumes signals directly (not only offline replay).
 3. Add decimal-preserving CSV/report export modes for all analytics outputs (not only console summaries).
 4. Add execution adapter interfaces before implementing a real bot.
+
+## Engineering Plan (Concrete)
+
+This plan is focused on turning the current signal scanner into an execution-ready research platform, then a safe paper-trading runtime, and only then a constrained live bot.
+
+### Phase 1: Execution-Ready Research (Priority)
+
+Goal: make opportunity detection market-data-correct and latency-aware before any live execution work.
+
+Scope:
+
+1. Build local order books per symbol using Binance diff-depth + REST snapshot sync.
+2. Detect sequence gaps and automatically resync stale/broken books.
+3. Gate signal generation on order book health/staleness.
+4. Add timing metrics (receive lag / processing lag / publish lag).
+5. Tighten simulator assumptions with latency/slippage hooks.
+
+Planned modules / files:
+
+- Add `src/orderbook.rs`
+  - local book state (`bids`, `asks`, last update IDs)
+  - apply diff updates
+  - snapshot sync / reset helpers
+  - book staleness and health status
+- Add `src/binance_rest.rs`
+  - snapshot fetch for `/api/v3/depth`
+  - `exchangeInfo` fetch/cache helpers (can reuse in auto-triangle generation)
+  - server time helper (future timing sync)
+- Add `src/market_state.rs`
+  - registry of all symbol order books
+  - update routing by stream/symbol
+  - health view used by workers
+- Refactor `src/workers.rs`
+  - consume local books instead of direct depth payload snapshots
+  - use best executable levels from local book state
+  - reject/pause triangles when any leg book is stale or unsynced
+  - add latency/staleness fields to signals
+- Update `src/models.rs`
+  - add signal fields for data age and decision latency
+  - optional signal reason fields for stale-book rejection
+- Update `src/config.rs`
+  - add book sync/staleness thresholds (ms)
+  - add REST snapshot depth size config
+  - add optional slippage/latency modeling knobs for simulator
+- Update `src/main.rs`
+  - initialize shared market state and REST helpers
+  - wire worker to market state + reconnect-safe sync logic
+
+Phase 1 acceptance criteria:
+
+- No triangle is evaluated unless all 3 legs are in `synced` state.
+- Sequence gaps trigger resync without crashing the process.
+- Signals include enough timing metadata to analyze edge decay.
+- A test/replay path exists for validating order book merge logic.
+
+### Phase 2: Live Paper-Trading Runtime
+
+Goal: simulate execution continuously from live market data with realistic state transitions (still no real orders).
+
+Scope:
+
+1. Add a runtime paper executor that consumes live signals (not offline JSONL only).
+2. Add slippage/residual inventory modeling per leg.
+3. Add balance/exposure limits and kill switch controls.
+4. Add realized-vs-estimated PnL attribution metrics.
+
+Planned modules / files:
+
+- Add `src/paper_runtime.rs`
+  - subscribes to internal signal stream
+  - executes paper trades with cooldown/risk constraints
+  - updates virtual balances continuously
+- Add `src/risk.rs`
+  - notional caps, asset exposure caps, kill switch, loss streak limits
+- Add `src/slippage.rs`
+  - configurable slippage model (bps and/or depth-walk based)
+- Refactor `src/simulator.rs`
+  - share execution logic with `paper_runtime` where possible
+  - extract common simulation primitives
+- Update `src/config.rs`
+  - paper runtime enable/disable and risk thresholds
+- Update `src/main.rs`
+  - spawn paper runtime task when enabled
+
+Phase 2 acceptance criteria:
+
+- Live paper runtime can run for extended periods without unbounded memory growth.
+- Realized paper PnL is tracked separately from estimated signal PnL.
+- Risk rules can prevent trades and emit explicit rejection reasons.
+
+### Phase 3: Exchange Execution Foundation (No Aggressive Live Trading Yet)
+
+Goal: build safe execution plumbing and reconciliation before enabling meaningful capital.
+
+Scope:
+
+1. Signed REST client for order placement/cancel/query.
+2. User Data Stream consumer and order state machine.
+3. Exchange/account commission and filter reconciliation.
+4. Idempotent client order IDs and recovery/restart reconciliation.
+
+Planned modules / files:
+
+- Add `src/execution/mod.rs`
+- Add `src/execution/binance_client.rs`
+  - signed requests, time sync, recvWindow handling, rate limit backoff
+- Add `src/execution/order_manager.rs`
+  - order lifecycle, retries, cancel/replace, partial fill handling
+- Add `src/user_stream.rs`
+  - listen key lifecycle
+  - execution reports / balance updates
+- Add `src/reconcile.rs`
+  - startup reconciliation of open orders + balances
+- Update `src/models.rs`
+  - internal order/fill/balance domain structs (separate from signal structs)
+- Update `src/config.rs`
+  - API credentials via env/config references, execution limits, dry-run mode
+
+Phase 3 acceptance criteria:
+
+- Order state is recoverable after process restart.
+- Partial fills and cancellations are reconciled against exchange truth.
+- Execution can run in dry-run mode with full audit logs.
+
+### Phase 4: Controlled Live Trading (Small Capital, Narrow Universe)
+
+Goal: limited live rollout with strict controls and observability.
+
+Scope:
+
+1. Enable live execution for a small asset subset and strict notional caps.
+2. Monitor realized vs expected edge and reject rates.
+3. Tune latency/risk thresholds from production observations.
+
+Operational focus:
+
+- start with few triangles, high liquidity pairs only
+- low max notional and max daily loss
+- immediate kill switch path (config + runtime)
+- audit logs for every decision/order/fill event
+
+### Cross-Cutting Work (can happen in parallel)
+
+1. Add replay tooling from recorded market data (`data/` -> deterministic worker replay).
+2. Add integration tests around websocket + signal pipeline + paper runtime.
+3. Add metrics export (`Prometheus`-style) for latency, staleness, opportunities, rejections.
+4. Add `exchangeInfo` caching (file + TTL) for startup speed and deterministic runs.
+
+### Suggested Immediate Implementation Order (for this repo)
+
+1. `src/orderbook.rs` + unit tests (book merge correctness first).
+2. `src/market_state.rs` + worker integration (replace direct depth snapshot use).
+3. Staleness gating + latency fields in `TriangleOpportunitySignal`.
+4. Replay test harness for market-data correctness.
+5. Live paper runtime (`src/paper_runtime.rs`) reusing simulator logic.
