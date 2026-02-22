@@ -50,6 +50,18 @@ const fn default_snapshot_resync_backoff_max_ms() -> u64 {
     5_000
 }
 
+const fn default_sync_health_gap_window_ms() -> u64 {
+    10_000
+}
+
+const fn default_sync_health_max_gaps_in_window_per_leg() -> u64 {
+    0
+}
+
+const fn default_sync_health_max_recent_resync_failure_age_ms() -> u64 {
+    0
+}
+
 const fn default_exchange_rules_enabled() -> bool {
     true
 }
@@ -186,6 +198,9 @@ exchange_rules:
         assert_eq!(cfg.snapshot_resync_min_interval_ms, 250);
         assert_eq!(cfg.snapshot_resync_backoff_initial_ms, 500);
         assert_eq!(cfg.snapshot_resync_backoff_max_ms, 5_000);
+        assert_eq!(cfg.sync_health_gap_window_ms, 10_000);
+        assert_eq!(cfg.sync_health_max_gaps_in_window_per_leg, 0);
+        assert_eq!(cfg.sync_health_max_recent_resync_failure_age_ms, 0);
     }
 }
 
@@ -260,6 +275,12 @@ pub struct AppConfig {
     pub snapshot_resync_backoff_initial_ms: u64,
     #[serde(default = "default_snapshot_resync_backoff_max_ms")]
     pub snapshot_resync_backoff_max_ms: u64,
+    #[serde(default = "default_sync_health_gap_window_ms")]
+    pub sync_health_gap_window_ms: u64,
+    #[serde(default = "default_sync_health_max_gaps_in_window_per_leg")]
+    pub sync_health_max_gaps_in_window_per_leg: u64,
+    #[serde(default = "default_sync_health_max_recent_resync_failure_age_ms")]
+    pub sync_health_max_recent_resync_failure_age_ms: u64,
     #[serde(default)]
     pub exchange_rules: ExchangeRulesConfig,
     #[serde(default)]

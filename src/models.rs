@@ -124,9 +124,21 @@ pub struct TriangleOpportunitySignal {
     #[serde(default)]
     pub pair_gap_count_by_leg: [u64; 3],
     #[serde(default)]
+    pub pair_recent_gap_count_by_leg: [u64; 3],
+    #[serde(default)]
+    pub pair_recent_gap_window_ms: u64,
+    #[serde(default)]
     pub pair_last_resync_timestamp_ms_by_leg: [u64; 3],
     #[serde(default)]
     pub pair_last_resync_failure_timestamp_ms_by_leg: [u64; 3],
+    #[serde(default)]
+    pub pair_recent_resync_failure_age_ms_by_leg: [u64; 3],
+    #[serde(default = "default_true")]
+    pub sync_health_passed: bool,
+    #[serde(default)]
+    pub sync_health_max_gaps_in_window_per_leg_threshold: u64,
+    #[serde(default)]
+    pub sync_health_max_recent_resync_failure_age_ms_threshold: u64,
     pub execution_filter_passed: bool,
     pub worthy: bool,
     pub min_profit_bps_threshold: Decimal,
@@ -174,8 +186,14 @@ mod tests {
             pair_resync_count_by_leg: [1, 2, 3],
             pair_resync_failure_count_by_leg: [0, 1, 0],
             pair_gap_count_by_leg: [0, 4, 1],
+            pair_recent_gap_count_by_leg: [0, 2, 1],
+            pair_recent_gap_window_ms: 10_000,
             pair_last_resync_timestamp_ms_by_leg: [100, 200, 300],
             pair_last_resync_failure_timestamp_ms_by_leg: [0, 250, 0],
+            pair_recent_resync_failure_age_ms_by_leg: [0, 50, 0],
+            sync_health_passed: true,
+            sync_health_max_gaps_in_window_per_leg_threshold: 0,
+            sync_health_max_recent_resync_failure_age_ms_threshold: 0,
             execution_filter_passed: true,
             worthy: true,
             min_profit_bps_threshold: Decimal::new(80, 1),

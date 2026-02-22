@@ -11,7 +11,7 @@ use log::{debug, error, info, warn};
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     net::TcpStream,
@@ -43,7 +43,7 @@ struct TriangleOutputs {
     signal_line: String,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct PairSyncStats {
     gap_count: u64,
     resync_attempt_count: u64,
@@ -54,6 +54,7 @@ struct PairSyncStats {
     last_resync_failure_timestamp_ms: u64,
     next_resync_allowed_timestamp_ms: u64,
     resync_backoff_ms: u64,
+    recent_gap_timestamps_ms: VecDeque<u64>,
 }
 
 #[derive(Clone)]
@@ -81,8 +82,14 @@ struct TriangleSyncHealth {
     pair_resync_count_by_leg: [u64; 3],
     pair_resync_failure_count_by_leg: [u64; 3],
     pair_gap_count_by_leg: [u64; 3],
+    pair_recent_gap_count_by_leg: [u64; 3],
+    pair_recent_gap_window_ms: u64,
     pair_last_resync_timestamp_ms_by_leg: [u64; 3],
     pair_last_resync_failure_timestamp_ms_by_leg: [u64; 3],
+    pair_recent_resync_failure_age_ms_by_leg: [u64; 3],
+    sync_health_passed: bool,
+    sync_health_max_gaps_in_window_per_leg_threshold: u64,
+    sync_health_max_recent_resync_failure_age_ms_threshold: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,10 +189,11 @@ pub async fn main_worker(
                                 "order book diff apply failed for {}: {:?}; resyncing",
                                 pair_key, err
                             );
-                            pair_sync_stats
-                                .entry(pair_key.clone())
-                                .or_default()
-                                .gap_count += 1;
+                            record_gap_event(
+                                pair_sync_stats.entry(pair_key.clone()).or_default(),
+                                receive_time_ms,
+                                config.sync_health_gap_window_ms,
+                            );
                             market_state.mark_pair_unsynced(&pair_key);
                             let buf = pending_diffs.entry(pair_key.clone()).or_default();
                             buf.clear();
@@ -327,7 +335,15 @@ async fn publish_triangle_updates(
             [&start_view, &mid_view, &end_view],
             config.max_book_age_ms,
         );
-        let sync_health = build_triangle_sync_health(triangle, market_state, pair_sync_stats);
+        let sync_health = build_triangle_sync_health(
+            triangle,
+            market_state,
+            pair_sync_stats,
+            signal_timestamp_ms,
+            config.sync_health_gap_window_ms,
+            config.sync_health_max_gaps_in_window_per_leg,
+            config.sync_health_max_recent_resync_failure_age_ms,
+        );
 
         let Some(outputs) = build_triangle_outputs(
             triangle,
@@ -443,7 +459,8 @@ fn build_triangle_outputs(
     let worthy = execution_outcome.execution_filter_passed
         && execution_outcome.adjusted_profit_bps >= dec_from_f64(config.signal_min_profit_bps)
         && hit_rate >= dec_from_f64(config.signal_min_hit_rate)
-        && book_timing.book_freshness_passed;
+        && book_timing.book_freshness_passed
+        && sync_health.sync_health_passed;
 
     if best_point.profit > Decimal::ZERO {
         info!(
@@ -518,6 +535,45 @@ fn build_opportunity_signal(
             book_timing.max_book_age_ms, book_timing.max_book_age_threshold_ms
         ));
     }
+    if !sync_health.sync_health_passed {
+        if sync_health.sync_health_max_recent_resync_failure_age_ms_threshold > 0 {
+            for (leg_idx, age_ms) in sync_health
+                .pair_recent_resync_failure_age_ms_by_leg
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                if age_ms > 0
+                    && age_ms <= sync_health.sync_health_max_recent_resync_failure_age_ms_threshold
+                {
+                    rejection_reasons.push(format!(
+                        "sync_health recent_resync_failure leg={} age_ms={} threshold_ms={}",
+                        leg_idx,
+                        age_ms,
+                        sync_health.sync_health_max_recent_resync_failure_age_ms_threshold
+                    ));
+                }
+            }
+        }
+        if sync_health.sync_health_max_gaps_in_window_per_leg_threshold > 0 {
+            for (leg_idx, gap_count) in sync_health
+                .pair_recent_gap_count_by_leg
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                if gap_count > sync_health.sync_health_max_gaps_in_window_per_leg_threshold {
+                    rejection_reasons.push(format!(
+                        "sync_health recent_gaps leg={} count={} window_ms={} threshold={}",
+                        leg_idx,
+                        gap_count,
+                        sync_health.pair_recent_gap_window_ms,
+                        sync_health.sync_health_max_gaps_in_window_per_leg_threshold
+                    ));
+                }
+            }
+        }
+    }
     models::TriangleOpportunitySignal {
         timestamp_ms: book_timing.signal_timestamp_ms,
         exchange: "binance".to_string(),
@@ -545,9 +601,18 @@ fn build_opportunity_signal(
         pair_resync_count_by_leg: sync_health.pair_resync_count_by_leg,
         pair_resync_failure_count_by_leg: sync_health.pair_resync_failure_count_by_leg,
         pair_gap_count_by_leg: sync_health.pair_gap_count_by_leg,
+        pair_recent_gap_count_by_leg: sync_health.pair_recent_gap_count_by_leg,
+        pair_recent_gap_window_ms: sync_health.pair_recent_gap_window_ms,
         pair_last_resync_timestamp_ms_by_leg: sync_health.pair_last_resync_timestamp_ms_by_leg,
         pair_last_resync_failure_timestamp_ms_by_leg: sync_health
             .pair_last_resync_failure_timestamp_ms_by_leg,
+        pair_recent_resync_failure_age_ms_by_leg: sync_health
+            .pair_recent_resync_failure_age_ms_by_leg,
+        sync_health_passed: sync_health.sync_health_passed,
+        sync_health_max_gaps_in_window_per_leg_threshold: sync_health
+            .sync_health_max_gaps_in_window_per_leg_threshold,
+        sync_health_max_recent_resync_failure_age_ms_threshold: sync_health
+            .sync_health_max_recent_resync_failure_age_ms_threshold,
         execution_filter_passed: execution_outcome.execution_filter_passed,
         worthy,
         min_profit_bps_threshold: dec_from_f64(min_profit_bps_threshold),
@@ -621,6 +686,46 @@ fn trim_pending_buffer(buffer: &mut Vec<BufferedDiffUpdate>, max_len: usize) {
     }
     let drop_count = buffer.len() - max_len;
     buffer.drain(0..drop_count);
+}
+
+fn record_gap_event(stats: &mut PairSyncStats, timestamp_ms: u64, gap_window_ms: u64) {
+    stats.gap_count += 1;
+    stats.recent_gap_timestamps_ms.push_back(timestamp_ms);
+    prune_old_timestamps(
+        &mut stats.recent_gap_timestamps_ms,
+        timestamp_ms,
+        gap_window_ms,
+    );
+    if stats.recent_gap_timestamps_ms.len() > 8_192 {
+        let drop_count = stats.recent_gap_timestamps_ms.len() - 8_192;
+        stats.recent_gap_timestamps_ms.drain(..drop_count);
+    }
+}
+
+fn prune_old_timestamps(timestamps: &mut VecDeque<u64>, now_ms: u64, window_ms: u64) {
+    if window_ms == 0 {
+        return;
+    }
+    let cutoff = now_ms.saturating_sub(window_ms);
+    while timestamps.front().is_some_and(|ts| *ts < cutoff) {
+        timestamps.pop_front();
+    }
+}
+
+fn count_recent_timestamps(timestamps: &VecDeque<u64>, now_ms: u64, window_ms: u64) -> u64 {
+    if window_ms == 0 {
+        return 0;
+    }
+    let cutoff = now_ms.saturating_sub(window_ms);
+    timestamps.iter().filter(|&&ts| ts >= cutoff).count() as u64
+}
+
+fn age_since_timestamp_ms(now_ms: u64, timestamp_ms: u64) -> u64 {
+    if timestamp_ms == 0 {
+        0
+    } else {
+        now_ms.saturating_sub(timestamp_ms)
+    }
 }
 
 async fn sync_pair_from_snapshot(
@@ -854,13 +959,48 @@ fn build_triangle_sync_health(
     triangle: &TriangleConfig,
     market_state: &MarketState,
     pair_sync_stats: &HashMap<String, PairSyncStats>,
+    signal_timestamp_ms: u64,
+    gap_window_ms: u64,
+    max_gaps_in_window_per_leg_threshold: u64,
+    max_recent_resync_failure_age_ms_threshold: u64,
 ) -> TriangleSyncHealth {
     let pair0 = &triangle.pairs[0];
     let pair1 = &triangle.pairs[1];
     let pair2 = &triangle.pairs[2];
-    let stats0 = pair_sync_stats.get(pair0).copied().unwrap_or_default();
-    let stats1 = pair_sync_stats.get(pair1).copied().unwrap_or_default();
-    let stats2 = pair_sync_stats.get(pair2).copied().unwrap_or_default();
+    let stats0 = pair_sync_stats.get(pair0).cloned().unwrap_or_default();
+    let stats1 = pair_sync_stats.get(pair1).cloned().unwrap_or_default();
+    let stats2 = pair_sync_stats.get(pair2).cloned().unwrap_or_default();
+    let recent_gap_counts = [
+        count_recent_timestamps(
+            &stats0.recent_gap_timestamps_ms,
+            signal_timestamp_ms,
+            gap_window_ms,
+        ),
+        count_recent_timestamps(
+            &stats1.recent_gap_timestamps_ms,
+            signal_timestamp_ms,
+            gap_window_ms,
+        ),
+        count_recent_timestamps(
+            &stats2.recent_gap_timestamps_ms,
+            signal_timestamp_ms,
+            gap_window_ms,
+        ),
+    ];
+    let recent_resync_failure_ages = [
+        age_since_timestamp_ms(signal_timestamp_ms, stats0.last_resync_failure_timestamp_ms),
+        age_since_timestamp_ms(signal_timestamp_ms, stats1.last_resync_failure_timestamp_ms),
+        age_since_timestamp_ms(signal_timestamp_ms, stats2.last_resync_failure_timestamp_ms),
+    ];
+    let recent_failure_failed = max_recent_resync_failure_age_ms_threshold > 0
+        && recent_resync_failure_ages
+            .iter()
+            .any(|&age_ms| age_ms > 0 && age_ms <= max_recent_resync_failure_age_ms_threshold);
+    let recent_gap_failed = max_gaps_in_window_per_leg_threshold > 0
+        && recent_gap_counts
+            .iter()
+            .any(|&count| count > max_gaps_in_window_per_leg_threshold);
+    let sync_health_passed = !recent_failure_failed && !recent_gap_failed;
 
     TriangleSyncHealth {
         pair_synced_by_leg: [
@@ -889,6 +1029,8 @@ fn build_triangle_sync_health(
             stats2.resync_failure_count,
         ],
         pair_gap_count_by_leg: [stats0.gap_count, stats1.gap_count, stats2.gap_count],
+        pair_recent_gap_count_by_leg: recent_gap_counts,
+        pair_recent_gap_window_ms: gap_window_ms,
         pair_last_resync_timestamp_ms_by_leg: [
             stats0.last_resync_timestamp_ms,
             stats1.last_resync_timestamp_ms,
@@ -899,6 +1041,11 @@ fn build_triangle_sync_health(
             stats1.last_resync_failure_timestamp_ms,
             stats2.last_resync_failure_timestamp_ms,
         ],
+        pair_recent_resync_failure_age_ms_by_leg: recent_resync_failure_ages,
+        sync_health_passed,
+        sync_health_max_gaps_in_window_per_leg_threshold: max_gaps_in_window_per_leg_threshold,
+        sync_health_max_recent_resync_failure_age_ms_threshold:
+            max_recent_resync_failure_age_ms_threshold,
     }
 }
 
