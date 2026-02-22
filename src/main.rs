@@ -7,6 +7,7 @@ use warp::{ws::Message, Filter, Rejection};
 mod analyzer;
 mod auto_triangles;
 mod binance_rest;
+mod capture_replay;
 mod config;
 mod generate_config;
 mod handlers;
@@ -59,6 +60,9 @@ async fn main() {
         return;
     }
     if replay_check::run_from_cli_args(std::env::args().skip(1)) {
+        return;
+    }
+    if capture_replay::run_from_cli_args(std::env::args().skip(1)).await {
         return;
     }
     if generate_config::run_from_cli_args(std::env::args().skip(1)).await {

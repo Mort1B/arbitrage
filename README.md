@@ -114,6 +114,24 @@ Notes:
 - `--strict` fails if replay leaves pending buffered diffs or hits apply/replay errors.
 - This is intended for regression-testing captured Binance sequences offline.
 
+### Capture Replay Fixtures (Live -> JSONL)
+
+Record live Binance diff-depth updates plus startup snapshots into the JSONL format consumed by `replay-check`:
+
+```bash
+cargo run -- capture-replay
+cargo run -- capture-replay data/replay_market.jsonl --seconds 60
+cargo run -- capture-replay data/replay_market.jsonl --max-diffs 10000
+cargo run -- capture-replay data/replay_market.jsonl --append --no-startup-snapshots
+```
+
+Notes:
+
+- Uses `depth_streams` from `config.yaml` (or auto-generated streams if `auto_triangle_generation.enabled: true`).
+- Writes startup snapshots first by default, then live diff records.
+- Use `--append` when building a fixture across multiple capture sessions.
+- Combine with `replay-check --strict` to regression-test local-book sync behavior offline.
+
 ## Analyze Recorded Signals
 
 Analyze the default signal file:
@@ -332,6 +350,7 @@ Clients can also send `ping` and receive `pong`.
 - `src/binance_rest.rs` - REST helpers (exchangeInfo cache, depth snapshot fetch for upcoming local-book sync)
 - `src/generate_config.rs` - writes auto-generated triangles/depth streams to YAML
 - `src/pnl_report.rs` - positive-PnL opportunity report from signal logs
+- `src/capture_replay.rs` - live Binance capture to replay JSONL (`snapshot` + `diff`) for offline regression tests
 - `src/replay_check.rs` - offline local-book sync replay/regression checker for snapshot+diff JSONL
 - `src/config.rs` - config structs + defaults
 
