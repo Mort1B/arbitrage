@@ -1,5 +1,6 @@
 use crate::models::TriangleOpportunitySignal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use std::{
     collections::HashMap,
     fs::File,
@@ -8,20 +9,20 @@ use std::{
 
 const DEFAULT_SIGNAL_LOG_PATH: &str = "data/triangle_signals.jsonl";
 const DEFAULT_RETRIGGER_COOLDOWN_MS: u64 = 1_500;
-const DEFAULT_MIN_ADJUSTED_PROFIT_BPS: f64 = 0.0;
+const DEFAULT_MIN_ADJUSTED_PROFIT_BPS: i64 = 0;
 const DEFAULT_TOP_ROWS: usize = 15;
 
 #[derive(Debug, Clone)]
 struct SimConfig {
     path: String,
     retrigger_cooldown_ms: u64,
-    min_adjusted_profit_bps: f64,
+    min_adjusted_profit_bps: Decimal,
     include_unworthy: bool,
-    position_size_pct: f64,
-    max_position_vs_signal: f64,
+    position_size_pct: Decimal,
+    max_position_vs_signal: Decimal,
     auto_seed_assets: bool,
-    seed_multiplier: f64,
-    initial_balances: HashMap<String, f64>,
+    seed_multiplier: Decimal,
+    initial_balances: HashMap<String, Decimal>,
 }
 
 impl Default for SimConfig {
@@ -29,12 +30,12 @@ impl Default for SimConfig {
         Self {
             path: DEFAULT_SIGNAL_LOG_PATH.to_string(),
             retrigger_cooldown_ms: DEFAULT_RETRIGGER_COOLDOWN_MS,
-            min_adjusted_profit_bps: DEFAULT_MIN_ADJUSTED_PROFIT_BPS,
+            min_adjusted_profit_bps: Decimal::from(DEFAULT_MIN_ADJUSTED_PROFIT_BPS),
             include_unworthy: false,
-            position_size_pct: 1.0,
-            max_position_vs_signal: 1.0,
+            position_size_pct: Decimal::ONE,
+            max_position_vs_signal: Decimal::ONE,
             auto_seed_assets: true,
-            seed_multiplier: 1.0,
+            seed_multiplier: Decimal::ONE,
             initial_balances: HashMap::new(),
         }
     }
@@ -54,8 +55,8 @@ struct SummaryStats {
     skipped_no_balance: usize,
     wins: usize,
     losses_or_flat: usize,
-    sum_adjusted_bps: f64,
-    total_notional_deployed: f64,
+    sum_adjusted_bps: Decimal,
+    total_notional_deployed: Decimal,
 }
 
 #[derive(Default)]
@@ -63,11 +64,11 @@ struct AssetStats {
     trades: usize,
     wins: usize,
     losses_or_flat: usize,
-    sum_pnl_asset: f64,
-    sum_adjusted_bps: f64,
-    sum_notional_deployed: f64,
-    max_adjusted_bps: f64,
-    min_adjusted_bps: f64,
+    sum_pnl_asset: Decimal,
+    sum_adjusted_bps: Decimal,
+    sum_notional_deployed: Decimal,
+    max_adjusted_bps: Option<Decimal>,
+    min_adjusted_bps: Option<Decimal>,
 }
 
 #[derive(Default)]
@@ -75,10 +76,10 @@ struct TriangleStats {
     start_asset: String,
     trades: usize,
     wins: usize,
-    sum_pnl_asset: f64,
-    sum_adjusted_bps: f64,
-    sum_notional_deployed: f64,
-    max_adjusted_bps: f64,
+    sum_pnl_asset: Decimal,
+    sum_adjusted_bps: Decimal,
+    sum_notional_deployed: Decimal,
+    max_adjusted_bps: Option<Decimal>,
 }
 
 pub fn run_from_cli_args<I>(mut args: I) -> bool
@@ -132,7 +133,7 @@ where
                     return Err("missing value for --min-adjusted-bps".to_string());
                 };
                 config.min_adjusted_profit_bps = value
-                    .parse::<f64>()
+                    .parse::<Decimal>()
                     .map_err(|_| "invalid number for --min-adjusted-bps".to_string())?;
             }
             "--include-unworthy" => {
@@ -143,7 +144,7 @@ where
                     return Err("missing value for --position-size-pct".to_string());
                 };
                 config.position_size_pct = value
-                    .parse::<f64>()
+                    .parse::<Decimal>()
                     .map_err(|_| "invalid number for --position-size-pct".to_string())?;
             }
             "--max-position-vs-signal" => {
@@ -151,7 +152,7 @@ where
                     return Err("missing value for --max-position-vs-signal".to_string());
                 };
                 config.max_position_vs_signal = value
-                    .parse::<f64>()
+                    .parse::<Decimal>()
                     .map_err(|_| "invalid number for --max-position-vs-signal".to_string())?;
             }
             "--no-auto-seed" => {
@@ -162,7 +163,7 @@ where
                     return Err("missing value for --seed-multiplier".to_string());
                 };
                 config.seed_multiplier = value
-                    .parse::<f64>()
+                    .parse::<Decimal>()
                     .map_err(|_| "invalid number for --seed-multiplier".to_string())?;
             }
             "--balance" => {
@@ -185,13 +186,13 @@ where
         }
     }
 
-    if !(0.0..=1.0).contains(&config.position_size_pct) || config.position_size_pct == 0.0 {
+    if config.position_size_pct <= Decimal::ZERO || config.position_size_pct > Decimal::ONE {
         return Err("--position-size-pct must be > 0 and <= 1".to_string());
     }
-    if config.max_position_vs_signal <= 0.0 {
+    if config.max_position_vs_signal <= Decimal::ZERO {
         return Err("--max-position-vs-signal must be > 0".to_string());
     }
-    if config.seed_multiplier <= 0.0 {
+    if config.seed_multiplier <= Decimal::ZERO {
         return Err("--seed-multiplier must be > 0".to_string());
     }
 
@@ -241,8 +242,8 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let adjusted_profit_bps = signal.adjusted_profit_bps.to_f64().unwrap_or(0.0);
-        let assumed_start_amount = signal.assumed_start_amount.to_f64().unwrap_or(0.0);
+        let adjusted_profit_bps = signal.adjusted_profit_bps;
+        let assumed_start_amount = signal.assumed_start_amount;
 
         if adjusted_profit_bps < config.min_adjusted_profit_bps {
             summary.skipped_profit_threshold += 1;
@@ -275,19 +276,19 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
         let start_asset = signal.triangle_parts[0].clone();
         let asset_key = normalize_asset_key(&start_asset);
         seed_balance_if_needed(&mut balances, &asset_key, &signal, config);
-        let available_balance = *balances.get(&asset_key).unwrap_or(&0.0);
+        let available_balance = *balances.get(&asset_key).unwrap_or(&Decimal::ZERO);
         let signal_cap = assumed_start_amount * config.max_position_vs_signal;
         let desired_position = (available_balance * config.position_size_pct).min(signal_cap);
         let position_size = desired_position.min(available_balance);
 
-        if position_size <= 0.0 || !position_size.is_finite() {
+        if position_size <= Decimal::ZERO {
             summary.skipped_no_balance += 1;
             set_active(&mut active_state_by_triangle, &signal, false);
             continue;
         }
 
-        let pnl_asset = position_size * adjusted_profit_bps / 10_000.0;
-        let is_win = adjusted_profit_bps > 0.0;
+        let pnl_asset = position_size * adjusted_profit_bps / Decimal::from(10_000u64);
+        let is_win = adjusted_profit_bps > Decimal::ZERO;
         if let Some(balance) = balances.get_mut(&asset_key) {
             *balance += pnl_asset;
         }
@@ -301,18 +302,25 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
             summary.losses_or_flat += 1;
         }
 
-        let asset_stats = by_asset
-            .entry(start_asset.clone())
-            .or_insert_with(|| AssetStats {
-                min_adjusted_bps: f64::INFINITY,
-                ..AssetStats::default()
-            });
+        let asset_stats = by_asset.entry(start_asset.clone()).or_default();
         asset_stats.trades += 1;
         asset_stats.sum_pnl_asset += pnl_asset;
         asset_stats.sum_adjusted_bps += adjusted_profit_bps;
         asset_stats.sum_notional_deployed += position_size;
-        asset_stats.max_adjusted_bps = asset_stats.max_adjusted_bps.max(adjusted_profit_bps);
-        asset_stats.min_adjusted_bps = asset_stats.min_adjusted_bps.min(adjusted_profit_bps);
+        asset_stats.max_adjusted_bps = Some(
+            asset_stats
+                .max_adjusted_bps
+                .map_or(adjusted_profit_bps, |current| {
+                    current.max(adjusted_profit_bps)
+                }),
+        );
+        asset_stats.min_adjusted_bps = Some(
+            asset_stats
+                .min_adjusted_bps
+                .map_or(adjusted_profit_bps, |current| {
+                    current.min(adjusted_profit_bps)
+                }),
+        );
         if is_win {
             asset_stats.wins += 1;
         } else {
@@ -324,13 +332,18 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
             .or_default();
         if triangle_stats.start_asset.is_empty() {
             triangle_stats.start_asset = start_asset;
-            triangle_stats.max_adjusted_bps = f64::NEG_INFINITY;
         }
         triangle_stats.trades += 1;
         triangle_stats.sum_pnl_asset += pnl_asset;
         triangle_stats.sum_adjusted_bps += adjusted_profit_bps;
         triangle_stats.sum_notional_deployed += position_size;
-        triangle_stats.max_adjusted_bps = triangle_stats.max_adjusted_bps.max(adjusted_profit_bps);
+        triangle_stats.max_adjusted_bps = Some(
+            triangle_stats
+                .max_adjusted_bps
+                .map_or(adjusted_profit_bps, |current| {
+                    current.max(adjusted_profit_bps)
+                }),
+        );
         if is_win {
             triangle_stats.wins += 1;
         }
@@ -343,7 +356,7 @@ fn simulate_file(config: &SimConfig) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_balance_arg(value: &str) -> Result<(String, f64), String> {
+fn parse_balance_arg(value: &str) -> Result<(String, Decimal), String> {
     let (asset, amount) = value
         .split_once('=')
         .ok_or_else(|| "--balance expects asset=amount".to_string())?;
@@ -352,9 +365,9 @@ fn parse_balance_arg(value: &str) -> Result<(String, f64), String> {
         return Err("asset in --balance asset=amount cannot be empty".to_string());
     }
     let amount = amount
-        .parse::<f64>()
+        .parse::<Decimal>()
         .map_err(|_| "invalid number in --balance asset=amount".to_string())?;
-    if amount < 0.0 {
+    if amount < Decimal::ZERO {
         return Err("balance amount must be >= 0".to_string());
     }
     Ok((asset, amount))
@@ -365,7 +378,7 @@ fn normalize_asset_key(asset: &str) -> String {
 }
 
 fn seed_balance_if_needed(
-    balances: &mut HashMap<String, f64>,
+    balances: &mut HashMap<String, Decimal>,
     asset_key: &str,
     signal: &TriangleOpportunitySignal,
     config: &SimConfig,
@@ -375,7 +388,7 @@ fn seed_balance_if_needed(
     }
     balances.insert(
         asset_key.to_string(),
-        signal.assumed_start_amount.to_f64().unwrap_or(0.0) * config.seed_multiplier,
+        signal.assumed_start_amount * config.seed_multiplier,
     );
 }
 
@@ -388,7 +401,7 @@ fn print_summary(
     summary: SummaryStats,
     by_asset: HashMap<String, AssetStats>,
     by_triangle: HashMap<String, TriangleStats>,
-    balances: HashMap<String, f64>,
+    balances: HashMap<String, Decimal>,
 ) {
     println!("Paper Trade Simulation");
     println!("file: {}", config.path);
@@ -396,11 +409,11 @@ fn print_summary(
         "filters: include_unworthy={} cooldown_ms={} min_adjusted_bps={:.2} pos_pct={:.2} max_vs_signal={:.2} auto_seed={} seed_mult={:.2}",
         config.include_unworthy,
         config.retrigger_cooldown_ms,
-        config.min_adjusted_profit_bps,
-        config.position_size_pct,
-        config.max_position_vs_signal,
+        config.min_adjusted_profit_bps.to_f64().unwrap_or(0.0),
+        config.position_size_pct.to_f64().unwrap_or(0.0),
+        config.max_position_vs_signal.to_f64().unwrap_or(0.0),
         config.auto_seed_assets,
-        config.seed_multiplier
+        config.seed_multiplier.to_f64().unwrap_or(0.0)
     );
     println!();
     println!(
@@ -423,62 +436,51 @@ fn print_summary(
         summary.wins, summary.losses_or_flat
     );
     if summary.executed_trades > 0 {
-        println!(
-            "avg adjusted bps per trade: {:.2}",
-            summary.sum_adjusted_bps / summary.executed_trades as f64
-        );
-        println!(
-            "avg deployed capital per trade: {:.6}",
-            summary.total_notional_deployed / summary.executed_trades as f64
-        );
+        let avg_bps = avg_decimal(summary.sum_adjusted_bps, summary.executed_trades)
+            .to_f64()
+            .unwrap_or(0.0);
+        let avg_deployed = avg_decimal(summary.total_notional_deployed, summary.executed_trades)
+            .to_f64()
+            .unwrap_or(0.0);
+        println!("avg adjusted bps per trade: {:.2}", avg_bps);
+        println!("avg deployed capital per trade: {:.6}", avg_deployed);
     }
     println!();
 
     let mut asset_rows = by_asset.into_iter().collect::<Vec<_>>();
-    asset_rows.sort_by(|a, b| b.1.sum_pnl_asset.total_cmp(&a.1.sum_pnl_asset));
+    asset_rows.sort_by(|a, b| b.1.sum_pnl_asset.cmp(&a.1.sum_pnl_asset));
     println!("By Start Asset");
     println!(
         "{:<8} {:>8} {:>8} {:>12} {:>12} {:>10} {:>10} {:>10}",
         "asset", "trades", "wins", "est_pnl", "deployed", "avg_bps", "max_bps", "min_bps"
     );
     for (asset, stats) in asset_rows {
-        let avg_bps = if stats.trades == 0 {
-            0.0
-        } else {
-            stats.sum_adjusted_bps / stats.trades as f64
-        };
-        let min_bps = if stats.trades == 0 || !stats.min_adjusted_bps.is_finite() {
-            0.0
-        } else {
-            stats.min_adjusted_bps
-        };
+        let avg_bps = avg_decimal(stats.sum_adjusted_bps, stats.trades)
+            .to_f64()
+            .unwrap_or(0.0);
+        let min_bps = stats
+            .min_adjusted_bps
+            .unwrap_or(Decimal::ZERO)
+            .to_f64()
+            .unwrap_or(0.0);
+        let max_bps = stats
+            .max_adjusted_bps
+            .unwrap_or(Decimal::ZERO)
+            .to_f64()
+            .unwrap_or(0.0);
+        let sum_pnl = stats.sum_pnl_asset.to_f64().unwrap_or(0.0);
+        let deployed = stats.sum_notional_deployed.to_f64().unwrap_or(0.0);
         println!(
             "{:<8} {:>8} {:>8} {:>12.6} {:>12.6} {:>10.2} {:>10.2} {:>10.2}",
-            asset,
-            stats.trades,
-            stats.wins,
-            stats.sum_pnl_asset,
-            stats.sum_notional_deployed,
-            avg_bps,
-            stats.max_adjusted_bps,
-            min_bps,
+            asset, stats.trades, stats.wins, sum_pnl, deployed, avg_bps, max_bps, min_bps,
         );
     }
     println!();
 
     let mut triangle_rows = by_triangle.into_iter().collect::<Vec<_>>();
     triangle_rows.sort_by(|a, b| {
-        let a_avg = if a.1.trades == 0 {
-            0.0
-        } else {
-            a.1.sum_adjusted_bps / a.1.trades as f64
-        };
-        let b_avg = if b.1.trades == 0 {
-            0.0
-        } else {
-            b.1.sum_adjusted_bps / b.1.trades as f64
-        };
-        b_avg.total_cmp(&a_avg)
+        avg_decimal(b.1.sum_adjusted_bps, b.1.trades)
+            .cmp(&avg_decimal(a.1.sum_adjusted_bps, a.1.trades))
     });
 
     println!("Top Triangles (by avg adjusted bps)");
@@ -487,20 +489,25 @@ fn print_summary(
         "triangle", "asset", "trades", "avg_bps", "max_bps", "est_pnl", "deployed"
     );
     for (triangle, stats) in triangle_rows.into_iter().take(DEFAULT_TOP_ROWS) {
-        let avg_bps = if stats.trades == 0 {
-            0.0
-        } else {
-            stats.sum_adjusted_bps / stats.trades as f64
-        };
+        let avg_bps = avg_decimal(stats.sum_adjusted_bps, stats.trades)
+            .to_f64()
+            .unwrap_or(0.0);
+        let max_bps = stats
+            .max_adjusted_bps
+            .unwrap_or(Decimal::ZERO)
+            .to_f64()
+            .unwrap_or(0.0);
+        let sum_pnl = stats.sum_pnl_asset.to_f64().unwrap_or(0.0);
+        let deployed = stats.sum_notional_deployed.to_f64().unwrap_or(0.0);
         println!(
             "{:<46} {:<6} {:>7} {:>10.2} {:>10.2} {:>12.6} {:>12.6}",
             truncate(&triangle, 46),
             stats.start_asset,
             stats.trades,
             avg_bps,
-            stats.max_adjusted_bps,
-            stats.sum_pnl_asset,
-            stats.sum_notional_deployed,
+            max_bps,
+            sum_pnl,
+            deployed,
         );
     }
 
@@ -510,7 +517,15 @@ fn print_summary(
     println!("Final Virtual Balances");
     println!("{:<8} {:>14}", "asset", "balance");
     for (asset, balance) in balance_rows {
-        println!("{:<8} {:>14.8}", asset, balance);
+        println!("{:<8} {:>14.8}", asset, balance.to_f64().unwrap_or(0.0));
+    }
+}
+
+fn avg_decimal(sum: Decimal, count: usize) -> Decimal {
+    if count == 0 {
+        Decimal::ZERO
+    } else {
+        sum / Decimal::from(count as u64)
     }
 }
 
@@ -529,13 +544,14 @@ fn truncate(input: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::parse_args;
+    use rust_decimal::Decimal;
 
     #[test]
     fn parse_args_defaults() {
         let cfg = parse_args(std::iter::empty::<String>()).expect("parse");
         assert_eq!(cfg.retrigger_cooldown_ms, 1_500);
         assert!(!cfg.include_unworthy);
-        assert_eq!(cfg.position_size_pct, 1.0);
+        assert_eq!(cfg.position_size_pct, Decimal::ONE);
         assert!(cfg.auto_seed_assets);
     }
 
@@ -560,11 +576,14 @@ mod tests {
         let cfg = parse_args(args.into_iter()).expect("parse");
         assert_eq!(cfg.path, "signals.jsonl");
         assert_eq!(cfg.retrigger_cooldown_ms, 5_000);
-        assert_eq!(cfg.min_adjusted_profit_bps, 12.5);
+        assert_eq!(cfg.min_adjusted_profit_bps, Decimal::new(125, 1));
         assert!(cfg.include_unworthy);
-        assert_eq!(cfg.position_size_pct, 0.25);
-        assert_eq!(cfg.max_position_vs_signal, 2.0);
-        assert_eq!(cfg.seed_multiplier, 5.0);
-        assert_eq!(cfg.initial_balances.get("usdt").copied(), Some(1000.0));
+        assert_eq!(cfg.position_size_pct, Decimal::new(25, 2));
+        assert_eq!(cfg.max_position_vs_signal, Decimal::new(20, 1));
+        assert_eq!(cfg.seed_multiplier, Decimal::new(5, 0));
+        assert_eq!(
+            cfg.initial_balances.get("usdt").copied(),
+            Some(Decimal::new(1000, 0))
+        );
     }
 }

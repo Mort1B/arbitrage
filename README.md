@@ -273,7 +273,8 @@ Clients can also send `ping` and receive `pong`.
 
 - Core triangle/execution math uses `rust_decimal`
 - Signal log numeric fields are emitted as decimal strings for precision-preserving storage
-- Console reports still format values for readability (some aggregates are displayed as rounded decimals)
+- Offline tools (`analyze`, `pnl-report`, `simulate`) use `Decimal` internally for signal-derived calculations/aggregates
+- Console reports still format values for readability (some values are displayed as rounded decimals)
 - Does not place orders
 - Does not model slippage, fees per symbol/tier, min notional, balances, or risk limits
 - `worthy` is a heuristic threshold, not a trading decision
@@ -282,5 +283,5 @@ Clients can also send `ping` and receive `pong`.
 
 1. Add Binance `exchangeInfo` cache/persistence to avoid fetching on every startup in auto-generation mode.
 2. Add a live paper-trading runtime that consumes signals directly (not only offline replay).
-3. Move simulator/report internal aggregation math from `f64` to `Decimal` if you want precision-preserving analytics end-to-end.
+3. Add decimal-preserving CSV/report export modes for all analytics outputs (not only console summaries).
 4. Add execution adapter interfaces before implementing a real bot.

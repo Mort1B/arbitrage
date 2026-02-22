@@ -1,5 +1,6 @@
 use crate::models::TriangleOpportunitySignal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use std::{
     collections::HashMap,
     fs::File,
@@ -12,9 +13,9 @@ const DEFAULT_SIGNAL_LOG_PATH: &str = "data/triangle_signals.jsonl";
 struct Stats {
     samples: usize,
     worthy_samples: usize,
-    sum_best_profit_bps: f64,
-    max_best_profit_bps: f64,
-    sum_hit_rate: f64,
+    sum_best_profit_bps: Decimal,
+    max_best_profit_bps: Option<Decimal>,
+    sum_hit_rate: Decimal,
 }
 
 pub fn run_from_cli_args<I>(mut args: I) -> bool
@@ -64,26 +65,22 @@ fn analyze_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let stats = by_triangle.entry(key).or_default();
         stats.samples += 1;
         stats.worthy_samples += usize::from(signal.worthy);
-        let best_profit_bps = signal.best_profit_bps.to_f64().unwrap_or(0.0);
-        let hit_rate = signal.hit_rate.to_f64().unwrap_or(0.0);
+        let best_profit_bps = signal.best_profit_bps;
+        let hit_rate = signal.hit_rate;
         stats.sum_best_profit_bps += best_profit_bps;
-        stats.max_best_profit_bps = stats.max_best_profit_bps.max(best_profit_bps);
+        stats.max_best_profit_bps = Some(
+            stats
+                .max_best_profit_bps
+                .map_or(best_profit_bps, |current| current.max(best_profit_bps)),
+        );
         stats.sum_hit_rate += hit_rate;
     }
 
     let mut rows = by_triangle.into_iter().collect::<Vec<_>>();
     rows.sort_by(|a, b| {
-        let a_avg = if a.1.samples == 0 {
-            0.0
-        } else {
-            a.1.sum_best_profit_bps / a.1.samples as f64
-        };
-        let b_avg = if b.1.samples == 0 {
-            0.0
-        } else {
-            b.1.sum_best_profit_bps / b.1.samples as f64
-        };
-        b_avg.total_cmp(&a_avg)
+        avg_decimal(a.1.sum_best_profit_bps, a.1.samples)
+            .cmp(&avg_decimal(b.1.sum_best_profit_bps, b.1.samples))
+            .reverse()
     });
 
     println!("Triangle Opportunity Analysis");
@@ -96,16 +93,17 @@ fn analyze_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     for (triangle, stats) in rows {
-        let avg_bps = if stats.samples == 0 {
-            0.0
-        } else {
-            stats.sum_best_profit_bps / stats.samples as f64
-        };
-        let avg_hit = if stats.samples == 0 {
-            0.0
-        } else {
-            stats.sum_hit_rate / stats.samples as f64
-        };
+        let avg_bps = avg_decimal(stats.sum_best_profit_bps, stats.samples)
+            .to_f64()
+            .unwrap_or(0.0);
+        let avg_hit = avg_decimal(stats.sum_hit_rate, stats.samples)
+            .to_f64()
+            .unwrap_or(0.0);
+        let max_bps = stats
+            .max_best_profit_bps
+            .unwrap_or(Decimal::ZERO)
+            .to_f64()
+            .unwrap_or(0.0);
 
         println!(
             "{:<42} {:>8} {:>8} {:>10.2} {:>10.2} {:>10.3}",
@@ -113,12 +111,20 @@ fn analyze_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             stats.samples,
             stats.worthy_samples,
             avg_bps,
-            stats.max_best_profit_bps,
+            max_bps,
             avg_hit,
         );
     }
 
     Ok(())
+}
+
+fn avg_decimal(sum: Decimal, count: usize) -> Decimal {
+    if count == 0 {
+        Decimal::ZERO
+    } else {
+        sum / Decimal::from(count as u64)
+    }
 }
 
 fn truncate(input: &str, max_len: usize) -> String {
